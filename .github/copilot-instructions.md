@@ -407,18 +407,74 @@ Two methods for importing consumption history:
 
 ## Commit & PR Guidelines
 
-**Commit format**: `<type>(<scope>): <subject>` (see CONTRIBUTING.md)
-- Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
-- Examples: `feat(sensor): add peak demand tracking`, `fix(coordinator): handle missing contract data`
+### Commit Message Format (Conventional Commits)
 
-**PR requirements**:
+**ALWAYS use Conventional Commits format** when generating commit messages:
+
+```
+<type>(<scope>): <subject>
+
+[optional body]
+
+[optional footer]
+```
+
+**Types** (required):
+- `feat`: New feature for the user
+- `fix`: Bug fix
+- `docs`: Documentation only changes
+- `style`: Code style changes (formatting, missing semi-colons, etc.)
+- `refactor`: Code refactoring (neither fixes a bug nor adds a feature)
+- `test`: Adding or updating tests
+- `chore`: Changes to build process, dependencies, or auxiliary tools
+- `perf`: Performance improvements
+- `ci`: CI/CD configuration changes
+
+**Scope** (optional but recommended):
+- `sensor`: Sensor-related changes
+- `coordinator`: Coordinator logic
+- `config_flow`: Configuration flow
+- `api`: API client changes
+- `tests`: Test infrastructure
+- `docs`: Documentation files
+
+**Subject** (required):
+- Use imperative mood ("add" not "added" or "adds")
+- Don't capitalize first letter
+- No period at the end
+- Keep under 72 characters
+
+**Examples**:
+```
+feat(sensor): add peak demand tracking sensor
+fix(coordinator): handle missing contract data gracefully
+docs(readme): update installation instructions
+test(coordinator): add DST transition test cases
+chore(deps): update Hydro-Quebec-API-Wrapper to 4.2.3
+refactor(config_flow): simplify rate selection logic
+```
+
+**Multi-line commits**:
+```
+feat(consumption): add hourly consumption history import
+
+Users can now import 0-800 days of consumption history during setup.
+CSV import is used for >30 days, regular sync for ≤30 days.
+
+Closes #123
+```
+
+### PR Requirements
+
 - All CI checks pass (lint, type, test, validate, hacs, hassfest)
 - Update CHANGELOG.md for user-facing changes
 - Add tests for new features
 - Bilingual translations (en + fr)
 - Update `.github/copilot-instructions.md` if introducing new patterns, workflows, or architectural changes
 
-**Note for AI agents**: When implementing features that introduce new conventions, patterns, or workflows not covered in these instructions, update this file to document them for future reference.
+**Note for AI agents**: 
+- When generating commit messages, ALWAYS follow Conventional Commits format
+- When implementing features that introduce new conventions, patterns, or workflows not covered in these instructions, update this file to document them for future reference
 
 ## Test Suite
 
