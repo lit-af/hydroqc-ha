@@ -6,6 +6,22 @@
 
 Composant natif pour Home Assistant permettant de surveiller vos comptes d'électricité Hydro-Québec. Accédez aux données de consommation, informations de facturation, périodes de pointe, crédits hivernaux et notifications de pannes directement dans Home Assistant.
 
+## Question fréquentes À LIRE ABSOLUMENT!!!
+
+### ⚠️ Avertissement ⚠️
+
+Ce composant est tout nouveau et n'a jamais passé l'épreuve du feu d'un événement de pointe critique hivernal. Prenez pour acquis qu'un bug peut survenir et prévoyez déclencher vos automatisations d'une autre manière au besoin. Soyez assurés que je (@mdallaire) garde l'œil ouvert pour le premier événement et vais faire mon possible pour régler d'éventuels bugs rapidement.
+
+### Est-ce que je peux installer cette intégration en parallèle du Add-on ou hydroqc2mqtt?
+
+Oui! Absolument, c'est la manière la plus sûre de tester. Vous pouvez aussi désactiver temporairement le add-on/hydroqc2mqtt si vous êtes satisfait du fonctionnement de l'intégration afin d'éviter les appels en double vers Hydro-Québec.
+
+### Comment migrer mes automatisations ou les blueprints vers l'intégration?
+
+Les capteurs disponibles sont les mêmes qu'avec le add-on ou hydroqc2mqtt. Assurez-vous de mettre à jour les entités dans les blueprints et vos automatisations au besoin.
+
+De nouveaux blueprints vont être créés spécifiquement pour cette intégration afin d'en simplifier encore plus la configuration.
+
 ## Fonctionnalités
 
 - ✅ **Intégration complète du compte** : Solde, consommation, données de facturation
@@ -140,41 +156,6 @@ Disponibles même en mode pointes uniquement :
 - Avertissements de pointe critique
 - Notifications de préchauffage
 - Calendriers de pointes à venir
-
-## Exemples d'automatisations
-
-### Alerte de pointe critique
-
-```yaml
-automation:
-  - alias: "Alerte de pointe critique"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.maison_pointe_critique_matin_aujourd_hui
-        to: "on"
-    action:
-      - service: notify.mobile_app
-        data:
-          title: "⚡ Pointe critique aujourd'hui"
-          message: "Réduisez la consommation d'électricité entre 6h-9h"
-```
-
-### Notification de préchauffage
-
-```yaml
-automation:
-  - alias: "Début du préchauffage"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.maison_prechauffage_en_cours
-        to: "on"
-    action:
-      - service: climate.set_temperature
-        target:
-          entity_id: climate.thermostat
-        data:
-          temperature: 22  # Préchauffage avant la pointe
-```
 
 ## Dépannage
 
