@@ -41,12 +41,7 @@ De nouveaux blueprints vont être créés spécifiquement pour cette intégratio
 | **D + CPC** | Tarif D avec Crédits hivernaux | Périodes de pointe, crédits hivernaux, pointes critiques |
 | **DT** | Tarif double énergie | Suivi de la consommation aux prix supérieur/inférieur |
 | **DPC** | Flex-D | Tarification dynamique, gestion des pointes critiques |
-| **M** | Tarif petite entreprise M | Suivi de la consommation commerciale |
-| **M-GDP** | Tarif M avec Gestion de la puissance | Commercial avec gestion de la demande |
 
-## Développement
-
-Consultez [CONTRIBUTING.md](CONTRIBUTING.md) pour la configuration du développement, les directives de contribution, et la documentation complète des tests.
 
 ## Installation
 
@@ -184,6 +179,10 @@ Disponibles même en mode pointes uniquement :
 - Certains capteurs ne sont actifs que pendant des saisons spécifiques (crédits hivernaux)
 - Vérifiez si votre plan tarifaire supporte le capteur
 - Vérifiez que le coordinateur se met à jour (consultez les journaux)
+
+## Développement
+
+Consultez [CONTRIBUTING.md](CONTRIBUTING.md) pour la configuration du développement, les directives de contribution, et la documentation complète des tests.
 
 ## Support
 
