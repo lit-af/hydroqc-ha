@@ -43,8 +43,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 # Hydro-Québec open data API endpoint (Opendatasoft v2.1)
-WINTER_PEAKS_API_BASE = "https://dev-hydroquebec.opendatasoft.com/api/explore/v2.1"
-WINTER_PEAKS_DATASET = "pointes-hivernales-dev"
+WINTER_PEAKS_API_BASE = "https://donnees.hydroquebec.com/api/explore/v2.1"
+WINTER_PEAKS_DATASET = "evenements-pointe"
 WINTER_PEAKS_URL = f"{WINTER_PEAKS_API_BASE}/catalog/datasets/{WINTER_PEAKS_DATASET}/records"
 
 # Sector mapping
@@ -69,7 +69,7 @@ async def fetch_available_sectors() -> list[str]:
     """Fetch available sectors from Hydro-Québec open data API."""
     try:
         async with aiohttp.ClientSession() as session:
-            params = {
+            params: dict[str, str | int] = {
                 "select": "secteurclient",
                 "limit": 100,
                 "timezone": "America/Toronto",
@@ -97,9 +97,9 @@ async def fetch_offers_for_sector(sector: str) -> list[dict[str, str]]:
     """Fetch available offers for a specific sector from Hydro-Québec open data API."""
     try:
         async with aiohttp.ClientSession() as session:
-            params = {
+            params: dict[str, str | int] = {
                 "select": "offre",
-                "where": f"secteurclient='{sector}'",
+                "refine": f'secteurclient:"{sector}"',
                 "limit": 100,
                 "timezone": "America/Toronto",
             }
