@@ -163,6 +163,25 @@ just restart  # Restart HA container to reload integration
 
 ## Code Conventions
 
+### GitHub Issue Management
+
+**CRITICAL**: When working with GitHub issues, pull requests, or repository operations:
+- **ALWAYS ask user permission before creating, updating, or commenting on issues/PRs**
+- **ALWAYS use MCP GitHub tools** (activate with `activate_*` tools), NOT `gh` CLI commands
+- **Exception**: Read-only operations (listing, viewing) can be done without asking
+- **Examples requiring permission**:
+  - Creating new issues
+  - Adding comments to existing issues
+  - Updating issue status or labels
+  - Creating or updating pull requests
+
+**Available GitHub MCP Tools** (activate via `activate_*` functions):
+- `activate_pull_request_management_tools`: For PR operations
+- `activate_github_search_tools`: For searching issues/PRs
+- `activate_repository_management_tools`: For repo/branch/PR creation
+- `activate_pull_request_review_tools`: For adding review comments
+- `activate_issue_and_commit_management_tools`: For issue operations
+
 ### Type Hints & Style
 - **Strict mypy**: All functions need type hints (`-> None`, `-> bool`, etc.)
 - **Imports**: Auto-organized by ruff (stdlib → third-party → HA → local)

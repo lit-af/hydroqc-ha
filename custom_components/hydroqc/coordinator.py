@@ -21,6 +21,11 @@ from hydroqc.contract.common import Contract
 from hydroqc.customer import Customer
 from hydroqc.webuser import WebUser
 
+try:
+    HYDROQC_VERSION = hydroqc.__version__
+except AttributeError:
+    HYDROQC_VERSION = "unknown"
+
 from .const import (
     AUTH_MODE_OPENDATA,
     AUTH_MODE_PORTAL,
@@ -48,6 +53,7 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the coordinator."""
+        _LOGGER.info("Hydro-Québec API Wrapper version: %s", HYDROQC_VERSION)
         self.entry = entry
         self._auth_mode = entry.data[CONF_AUTH_MODE]
         self._rate = entry.data[CONF_RATE]
