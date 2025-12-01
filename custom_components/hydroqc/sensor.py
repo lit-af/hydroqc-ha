@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
@@ -31,14 +32,15 @@ async def async_setup_entry(
 
     for sensor_key, sensor_config in SENSORS.items():
         # Check if sensor is applicable for this rate
-        if "ALL" not in sensor_config["rates"]:
-            if coordinator.rate_with_option not in sensor_config["rates"]:
+        rates = sensor_config.get("rates", [])
+        if "ALL" not in rates:
+            if coordinator.rate_with_option not in rates:
                 continue
 
         # In opendata mode, only create sensors that use public_client data
         if coordinator.is_opendata_mode:
-            data_source = sensor_config["data_source"]
-            if not data_source.startswith("public_client."):
+            data_source = sensor_config.get("data_source", "")
+            if isinstance(data_source, str) and not data_source.startswith("public_client."):
                 _LOGGER.debug(
                     "Skipping sensor %s in opendata mode (requires portal login)",
                     sensor_key,
@@ -47,10 +49,8 @@ async def async_setup_entry(
 
         # Skip winter credit sensors (contract.peak_handler) if not DCPC
         # Note: public_client.peak_handler sensors should NOT be skipped
-        if (
-            "contract.peak_handler." in sensor_config["data_source"]
-            and coordinator.rate_option != "CPC"
-        ):
+        data_source_str = str(sensor_config.get("data_source", ""))
+        if "contract.peak_handler." in data_source_str and coordinator.rate_option != "CPC":
             continue
 
         entities.append(HydroQcSensor(coordinator, entry, sensor_key, sensor_config))
@@ -69,7 +69,7 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
         coordinator: HydroQcDataCoordinator,
         entry: ConfigEntry,
         sensor_key: str,
-        sensor_config: dict[str, Any],
+        sensor_config: Mapping[str, Any],
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
