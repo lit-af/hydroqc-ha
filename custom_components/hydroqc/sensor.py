@@ -113,9 +113,13 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
 
         # Format value based on type
         if isinstance(value, datetime.datetime):
-            return value.isoformat()
+            # For timestamp device class, return datetime object directly
+            # Home Assistant will handle the formatting
+            return value if self._attr_device_class == "timestamp" else value.isoformat()
+
         if isinstance(value, datetime.timedelta):
             return f"{value.seconds / 60} minutes"
+
         if isinstance(value, (int, float)) and self._attr_device_class == "monetary":
             return round(value, 2)
 
