@@ -62,6 +62,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Mark first refresh as done and schedule initial consumption sync in background
     # This runs after HA setup completes to avoid blocking startup
     coordinator._first_refresh_done = True
+
+    # Schedule hourly updates for peak sensors to ensure accurate state transitions
+    coordinator._schedule_hourly_update()
+
     if coordinator.is_portal_mode and coordinator._contract:
         # Check if this is the first setup (history_days present) or a restart (flag removed)
         # We only import history once after initial setup, not on every restart

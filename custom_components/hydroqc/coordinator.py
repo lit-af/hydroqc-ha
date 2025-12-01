@@ -10,6 +10,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import slugify
 
@@ -96,6 +97,9 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Get update interval from options or use default
         update_interval_seconds = entry.options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
 
+        # Track last peak update hour to ensure hourly updates
+        self._last_peak_update_hour: int | None = None
+
         super().__init__(
             hass,
             _LOGGER,
@@ -169,12 +173,25 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "public_client": self.public_client,
         }
 
-        # Always fetch public peak data
-        try:
-            await self.public_client.fetch_peak_data()
-            _LOGGER.debug("[OpenData] Public peak data fetched successfully")
-        except Exception as err:
-            _LOGGER.warning("[OpenData] Failed to fetch public peak data: %s", err)
+        # Check if we need to update peak data (always on the hour)
+        current_hour = datetime.datetime.now().hour
+        should_update_peaks = self._last_peak_update_hour != current_hour
+
+        # Always fetch public peak data (especially on the hour for accurate state)
+        if should_update_peaks:
+            try:
+                await self.public_client.fetch_peak_data()
+                self._last_peak_update_hour = current_hour
+                _LOGGER.info("[OpenData] Hourly peak data refresh at %02d:00", current_hour)
+            except Exception as err:
+                _LOGGER.warning("[OpenData] Failed to fetch public peak data: %s", err)
+        else:
+            # Still fetch but don't log as prominently (regular interval update)
+            try:
+                await self.public_client.fetch_peak_data()
+                _LOGGER.debug("[OpenData] Public peak data fetched successfully")
+            except Exception as err:
+                _LOGGER.warning("[OpenData] Failed to fetch public peak data: %s", err)
 
         # If in peak-only mode, we're done
         if self.is_opendata_mode:
@@ -518,3 +535,24 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         winter_end = contract.peak_handler.winter_end_date.date()
 
         return winter_start <= today <= winter_end
+
+    def _schedule_hourly_update(self) -> None:
+        """Schedule the next update at the top of the hour for peak sensors."""
+        now = datetime.datetime.now()
+        # Schedule for the next hour
+        next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+        _LOGGER.debug("Scheduling next peak update at %s", next_hour)
+
+        async_track_point_in_time(
+            self.hass,
+            self._async_hourly_update,
+            next_hour,
+        )
+
+    async def _async_hourly_update(self, _now: datetime.datetime) -> None:
+        """Perform hourly update for peak sensors."""
+        _LOGGER.debug("Triggering hourly peak sensor update")
+        await self.async_request_refresh()
+        # Schedule the next hourly update
+        self._schedule_hourly_update()
