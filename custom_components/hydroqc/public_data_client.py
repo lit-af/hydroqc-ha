@@ -63,16 +63,31 @@ class AnchorPeriod:
 class PeakEvent:
     """Represents a winter peak event."""
 
-    def __init__(self, data: dict[str, Any], preheat_duration: int = 120) -> None:
-        """Initialize peak event from API data."""
+    def __init__(
+        self,
+        data: dict[str, Any],
+        preheat_duration: int = 120,
+        force_critical: bool | None = None,
+    ) -> None:
+        """Initialize peak event from API data.
 
+        Args:
+            data: Peak event data from API
+            preheat_duration: Pre-heat duration in minutes
+            force_critical: Explicitly set critical status (True=critical from API,
+                          False=generated non-critical, None=auto-detect from offer)
+        """
         self.offer = data["offre"]
+        self._force_critical = force_critical
         # Parse dates and make them timezone-aware (America/Toronto = EST/EDT)
         tz = zoneinfo.ZoneInfo("America/Toronto")
 
         # API uses lowercase field names: datedebut, datefin, plagehoraire, secteurclient
         start_str = data.get("datedebut") or data.get("dateDebut")
         end_str = data.get("datefin") or data.get("dateFin")
+
+        if not start_str or not end_str:
+            raise ValueError(f"Missing date fields in data: {data}")
 
         # Handle both date formats:
         # - Simple: "YYYY-MM-DD HH:MM" (most common from API)
@@ -116,9 +131,20 @@ class PeakEvent:
 
     @property
     def is_critical(self) -> bool:
-        """Determine if this is a critical peak based on offer type."""
-        # TPC (Tarif de pointe critique) = Critical peak
-        return self.offer.startswith("TPC") or self.offer.startswith("ENG")
+        """Determine if this is a critical peak.
+
+        Returns True if:
+        - force_critical=True (event from OpenData API announcement)
+        - force_critical=None and offer starts with TPC/ENG (backward compatibility)
+
+        Returns False if:
+        - force_critical=False (generated non-critical schedule peak)
+        - force_critical=None and offer doesn't start with TPC/ENG
+        """
+        if self._force_critical is not None:
+            return self._force_critical
+        # Fallback for backward compatibility (should not be used with new code)
+        return bool(self.offer.startswith("TPC") or self.offer.startswith("ENG"))
 
     @property
     def preheat(self) -> PreHeatPeriod:
@@ -158,17 +184,138 @@ class PeakHandler:
         self._events: list[PeakEvent] = []
 
     def load_events(self, events: list[dict[str, Any]]) -> None:
-        """Load peak events from API data.
+        """Load peak events from API and generate schedule if needed.
 
-        Note: Events are already filtered by rate at the API level,
-        so no additional filtering is needed here.
+        For DCPC (Winter Credits):
+        - Generates daily schedule (today + tomorrow)
+        - Marks API events as critical (force_critical=True)
+        - Marks generated schedule as non-critical (force_critical=False)
+        - If API event matches generated peak (same date+timeslot), uses API version
+
+        For DPC and other rates:
+        - Only uses API events (all marked as critical)
         """
-        self._events = [PeakEvent(event, self.preheat_duration) for event in events]
+        # Create API events with force_critical=True (all API announcements are critical)
+        api_events = [
+            PeakEvent(event, self.preheat_duration, force_critical=True) for event in events
+        ]
+
+        if self.rate_code == "DCPC":
+            # Generate schedule for DCPC
+            generated_peaks = self._generate_dcpc_schedule()
+
+            # Merge: if API event matches generated peak (same date+time slot), keep API version
+            merged_events: list[PeakEvent] = []
+            api_dates_slots = {(e.start_date.date(), e.time_slot) for e in api_events}
+
+            # Add all API events (critical)
+            merged_events.extend(api_events)
+
+            # Add generated peaks that don't have matching API event
+            for gen_peak in generated_peaks:
+                key = (gen_peak.start_date.date(), gen_peak.time_slot)
+                if key not in api_dates_slots:
+                    merged_events.append(gen_peak)
+
+            # Sort by start date
+            self._events = sorted(merged_events, key=lambda e: e.start_date)
+
+            _LOGGER.debug(
+                "[OpenData] DCPC schedule: %d API events (critical) + %d generated (non-critical) = %d total",
+                len(api_events),
+                len(generated_peaks)
+                - len(
+                    [
+                        p
+                        for p in generated_peaks
+                        if (p.start_date.date(), p.time_slot) in api_dates_slots
+                    ]
+                ),
+                len(self._events),
+            )
+        else:
+            # For DPC and other rates, only use API events
+            self._events = api_events
+            _LOGGER.debug(
+                "[OpenData] Loaded %d API peak events for rate %s (all critical)",
+                len(self._events),
+                self.rate_code,
+            )
+
+    def _generate_dcpc_schedule(self) -> list[PeakEvent]:
+        """Generate DCPC (Winter Credits) peak schedule for today and tomorrow.
+
+        Winter Credits has a fixed schedule during winter season (Dec 1 - Mar 31):
+        - Morning Peak: 6:00-10:00 (4 hours)
+        - Evening Peak: 16:00-20:00 (4 hours)
+
+        Returns empty list if outside winter season.
+        Returns list of PeakEvent objects with force_critical=False.
+        """
+        tz = zoneinfo.ZoneInfo("America/Toronto")
+        now = datetime.datetime.now(tz)
+
+        # Check if we're in winter season (Dec 1 - Mar 31)
+        today = now.date()
+        winter_start = datetime.date(today.year, 12, 1)
+        winter_end = datetime.date(today.year + 1, 3, 31)
+
+        # Handle year boundary - if today is before March 31, check previous year's Dec 1
+        if today.month < 12:
+            winter_start = datetime.date(today.year - 1, 12, 1)
+            winter_end = datetime.date(today.year, 3, 31)
+
+        if not (winter_start <= today <= winter_end):
+            _LOGGER.debug(
+                "[OpenData] Outside winter season (%s to %s), no DCPC schedule generated",
+                winter_start,
+                winter_end,
+            )
+            return []
+
+        # Generate peaks for today and tomorrow
+        generated_peaks: list[PeakEvent] = []
+
+        for day_offset in [0, 1]:  # 0=today, 1=tomorrow
+            target_date = today + datetime.timedelta(days=day_offset)
+
+            # Morning peak: 6:00-10:00
+            morning_start = datetime.datetime.combine(target_date, datetime.time(6, 0), tzinfo=tz)
+            morning_end = datetime.datetime.combine(target_date, datetime.time(10, 0), tzinfo=tz)
+
+            morning_data = {
+                "offre": "CPC-D",
+                "datedebut": morning_start.isoformat(),
+                "datefin": morning_end.isoformat(),
+                "plagehoraire": "AM",
+                "duree": "PT04H00MS",
+                "secteurclient": "Résidentiel",
+            }
+            generated_peaks.append(
+                PeakEvent(morning_data, self.preheat_duration, force_critical=False)
+            )
+
+            # Evening peak: 16:00-20:00
+            evening_start = datetime.datetime.combine(target_date, datetime.time(16, 0), tzinfo=tz)
+            evening_end = datetime.datetime.combine(target_date, datetime.time(20, 0), tzinfo=tz)
+
+            evening_data = {
+                "offre": "CPC-D",
+                "datedebut": evening_start.isoformat(),
+                "datefin": evening_end.isoformat(),
+                "plagehoraire": "PM",
+                "duree": "PT04H00MS",
+                "secteurclient": "Résidentiel",
+            }
+            generated_peaks.append(
+                PeakEvent(evening_data, self.preheat_duration, force_critical=False)
+            )
+
         _LOGGER.debug(
-            "Loaded %d peak events for rate %s",
-            len(self._events),
-            self.rate_code,
+            "[OpenData] Generated %d DCPC schedule peaks for today and tomorrow",
+            len(generated_peaks),
         )
+        return generated_peaks
 
     def _get_hq_offers_for_rate(self) -> list[str]:
         """Get Hydro-Québec offer codes for current rate."""
@@ -223,29 +370,37 @@ class PeakHandler:
 
     @property
     def current_state(self) -> str:
-        """Get current state description."""
-        # If no events, we're outside the season
+        """Get current state description.
+
+        Returns hydroqc2mqtt-compatible values:
+        - "off_season": No events loaded
+        - "critical_peak": During a critical peak
+        - "peak": During a non-critical peak
+        - "critical_anchor": During an anchor period before a critical peak (DCPC only)
+        - "anchor": During an anchor period before a non-critical peak (DCPC only)
+        - "normal": Regular period (no peak/anchor/preheat active)
+        """
+        # If no events, we're off season
         if not self._events:
-            return "Off Season (Dec 1 - Mar 31)"
+            return "off_season"
 
         tz = zoneinfo.ZoneInfo("America/Toronto")
         now = datetime.datetime.now(tz)
+
+        # Check if currently in a peak
         current = self.current_peak
-
         if current:
-            state_type = "Critical Peak" if current.is_critical else "Peak"
-            return f"{state_type} in progress"
+            return "critical_peak" if current.is_critical else "peak"
 
-        # Check if in preheat
-        next_event = self.next_peak
-        if next_event:
-            preheat_start = next_event.start_date - datetime.timedelta(
-                minutes=self.preheat_duration
-            )
-            if preheat_start <= now < next_event.start_date:
-                return "Pre-heat in progress"
+        # Check if currently in an anchor period (DCPC only)
+        if self.rate_code == "DCPC":
+            for event in self._events:
+                if hasattr(event, "anchor") and event.anchor:
+                    anchor = event.anchor
+                    if anchor.start_date <= now < anchor.end_date:
+                        return "critical_anchor" if anchor.is_critical else "anchor"
 
-        return "Regular period"
+        return "normal"
 
     @property
     def current_peak_is_critical(self) -> bool:
@@ -378,7 +533,7 @@ class PublicDataClient:
 
             # Build refine filter to filter by rate (Opendatasoft API syntax)
             # Use refine parameter: refine=offre:"TPC-DPC"
-            params = {
+            params: dict[str, str | int] = {
                 "limit": 100,
                 "timezone": "America/Toronto",
                 "refine": f'offre:"{hq_offers[0]}"',
