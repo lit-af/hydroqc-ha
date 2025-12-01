@@ -106,23 +106,23 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def is_portal_mode(self) -> bool:
-        """Return True if in portal mode (with login)."""
+        """Return True if using portal authentication."""
         return self._auth_mode == AUTH_MODE_PORTAL
 
     @property
     def is_opendata_mode(self) -> bool:
-        """Return True if in opendata mode (without login)."""
+        """Return True if using open data API only."""
         return self._auth_mode == AUTH_MODE_OPENDATA
 
     @property
     def rate(self) -> str:
-        """Return the rate."""
-        return self._rate
+        """Return the rate code."""
+        return str(self._rate)
 
     @property
     def rate_option(self) -> str:
         """Return the rate option."""
-        return self._rate_option
+        return str(self._rate_option)
 
     @property
     def rate_with_option(self) -> str:
@@ -432,13 +432,20 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return f"hydroqc:{base_name}_hourly_consumption"
         return f"hydroqc:{base_name}_{consumption_type}_hourly_consumption"
 
-    def get_sensor_value(self, data_source: str) -> Any:
+    def get_sensor_value(self, data_source: str) -> Any:  # noqa: PLR0911, PLR0912
         """Extract sensor value from data using dot-notation path.
 
         Example: "contract.cp_current_bill" -> walks the object graph.
         Returns None if data not available.
+
+        Special handling for binary sensors (paths ending with is_critical):
+        - If intermediate object is None, returns False (not None/Unknown)
+        - Ensures binary sensors show False outside season instead of Unknown
         """
         if not self.data:
+            # For binary sensors ending with is_critical, return False instead of None
+            if data_source.endswith(".is_critical"):
+                return False
             return None
 
         parts = data_source.split(".")
@@ -455,20 +462,32 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             obj = self.data.get("public_client")
 
         if obj is None:
+            # For binary sensors ending with is_critical, return False instead of None
+            if data_source.endswith(".is_critical"):
+                return False
             return None
 
         # Walk the path
         for part in parts[1:]:
             if obj is None:
-                # If we hit None in the middle of the path, return None
+                # If we hit None in the middle of the path
+                # For binary sensors ending with is_critical, return False
+                if data_source.endswith(".is_critical"):
+                    return False
                 return None
             if not hasattr(obj, part):
                 _LOGGER.debug("Attribute %s not found in %s", part, type(obj).__name__)
+                # For binary sensors ending with is_critical, return False
+                if data_source.endswith(".is_critical"):
+                    return False
                 return None
             try:
                 obj = getattr(obj, part)
             except AttributeError:
                 # Handle case where getattr fails on None or invalid object
+                # For binary sensors ending with is_critical, return False
+                if data_source.endswith(".is_critical"):
+                    return False
                 return None
 
         return obj
