@@ -1,6 +1,30 @@
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+---
+
+## [0.1.3] - 2025-12-01
+
+### Fixed
+- KeyError: 'hrsCritiquesAppelees' in DPC contracts during winter season (#9)
+- Updated Hydro-Quebec-API-Wrapper to 4.2.4 to fix upstream library issue
+
+### Added
+- Version logging on coordinator initialization to verify library version at runtime
+- GitHub issue management guidelines in copilot-instructions.md
+
+---
+
+## [0.1.2] - 2024-12-01
+
+### Added
 - Initial release
 - Config flow with authenticated and peak-only modes
 - Support for rates: D, DT, DPC, M, M-GDP
@@ -12,12 +36,6 @@
 - Service calls: `refresh_data` and `fetch_hourly_consumption`
 - Bilingual support (English/French)
 - HACS compatible
-
-### Changed
-
-### Fixed
-
-### Removed
 
 ---
 
