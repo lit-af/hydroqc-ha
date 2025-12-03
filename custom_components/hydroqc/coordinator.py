@@ -26,18 +26,22 @@ try:
 except AttributeError:
     HYDROQC_VERSION = "unknown"
 
+from . import calendar_manager
 from .const import (
     AUTH_MODE_OPENDATA,
     AUTH_MODE_PORTAL,
     CONF_ACCOUNT_ID,
     CONF_AUTH_MODE,
+    CONF_CALENDAR_ENTITY_ID,
     CONF_CONTRACT_ID,
     CONF_CONTRACT_NAME,
     CONF_CUSTOMER_ID,
+    CONF_INCLUDE_NON_CRITICAL_PEAKS,
     CONF_PREHEAT_DURATION,
     CONF_RATE,
     CONF_RATE_OPTION,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -90,6 +94,18 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._statistics_manager: StatisticsManager | None = None
         self._history_importer: ConsumptionHistoryImporter | None = None
 
+        # Calendar configuration (for DPC/DCPC rates)
+        self._calendar_entity_id = entry.options.get(
+            CONF_CALENDAR_ENTITY_ID, entry.data.get(CONF_CALENDAR_ENTITY_ID)
+        )
+        self._include_non_critical_peaks = entry.options.get(
+            CONF_INCLUDE_NON_CRITICAL_PEAKS,
+            entry.data.get(CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS),
+        )
+
+        # Track created calendar event UIDs (persisted in hass.data)
+        self._created_event_uids: set[str] = set()
+
         # Initialize webuser if in portal mode
         if self._auth_mode == AUTH_MODE_PORTAL:
             self._webuser = WebUser(
@@ -141,6 +157,24 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def rate_with_option(self) -> str:
         """Return rate + rate_option concatenated (e.g., 'DCPC', 'DT', 'DPC')."""
         return f"{self._rate}{self._rate_option}"
+
+    @property
+    def contract_name(self) -> str:
+        """Return the contract name for display purposes."""
+        return str(self.entry.data.get(CONF_CONTRACT_NAME, "Contract"))
+
+    @property
+    def contract_id(self) -> str:
+        """Return the contract ID.
+
+        For portal mode, returns the actual contract ID.
+        For opendata mode, generates a stable ID from contract name.
+        """
+        if self.is_portal_mode:
+            return str(self._contract_id)
+        # For opendata mode, generate stable ID from contract name
+        contract_name = self.contract_name
+        return f"opendata_{slugify(contract_name)}"
 
     @property
     def is_consumption_history_syncing(self) -> bool:
@@ -275,6 +309,10 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Only if not during first refresh to avoid blocking HA startup
         if self.is_portal_mode and self._contract and hasattr(self, "_first_refresh_done"):
             self._regular_sync_task = asyncio.create_task(self._async_regular_consumption_sync())
+
+        # Sync calendar events if configured and peak data available
+        if self._calendar_entity_id and self.public_client.peak_handler:
+            self._calendar_sync_task = asyncio.create_task(self._async_sync_calendar_events())
 
         return data
 
@@ -626,3 +664,101 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
         # Schedule the next hourly update
         self._schedule_hourly_update()
+
+    async def _async_sync_calendar_events(self) -> None:
+        """Sync peak events to configured calendar entity.
+
+        Only syncs for DPC/DCPC rates when calendar is configured.
+        Validates calendar entity exists and auto-disables if removed.
+        """
+        if not self._calendar_entity_id:
+            return
+
+        # Only sync for rates that support calendar (DPC/DCPC)
+        if self.rate_with_option not in ["DPC", "DCPC"]:
+            return
+
+        # Check if calendar entity exists
+        calendar_state = self.hass.states.get(self._calendar_entity_id)
+        if not calendar_state:
+            _LOGGER.warning(
+                "Calendar entity %s not found, disabling calendar sync for %s",
+                self._calendar_entity_id,
+                self.contract_name,
+            )
+
+            # Update entry to remove calendar configuration (auto-disable)
+            new_data = dict(self.entry.data)
+            new_data.pop(CONF_CALENDAR_ENTITY_ID, None)
+            new_data.pop(CONF_INCLUDE_NON_CRITICAL_PEAKS, None)
+
+            self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+            # Create persistent notification with repair link
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "message": (
+                        f"Le calendrier {self._calendar_entity_id} n'existe plus. "
+                        f"La synchronisation des événements de pointe a été désactivée pour {self.contract_name}. "
+                        f"Vous pouvez reconfigurer le calendrier dans les options de l'intégration."
+                    ),
+                    "title": "Hydro-Québec - Calendrier introuvable",
+                    "notification_id": f"hydroqc_calendar_missing_{self.contract_id}",
+                },
+            )
+
+            # Clear calendar config to avoid repeated checks
+            self._calendar_entity_id = None
+            return
+
+        # Get peak events from public client
+        if not self.public_client.peak_handler or not self.public_client.peak_handler._events:
+            _LOGGER.debug("No peak events available for calendar sync")
+            return
+
+        peaks = list(self.public_client.peak_handler._events)
+
+        try:
+            _LOGGER.debug(
+                "Syncing %d peak events to calendar %s for %s",
+                len(peaks),
+                self._calendar_entity_id,
+                self.contract_name,
+            )
+
+            # Sync events using calendar manager
+            new_uids = await calendar_manager.async_sync_events(
+                self.hass,
+                self._calendar_entity_id,
+                peaks,
+                self._created_event_uids,
+                self.contract_id,
+                self.contract_name,
+                self._include_non_critical_peaks or False,
+            )
+
+            # Update stored UIDs
+            self._created_event_uids = new_uids
+
+            # Persist UIDs in hass.data for recovery after restart
+            if DOMAIN not in self.hass.data:
+                self.hass.data[DOMAIN] = {}
+            if self.entry.entry_id not in self.hass.data[DOMAIN]:
+                self.hass.data[DOMAIN][self.entry.entry_id] = {}
+
+            self.hass.data[DOMAIN][self.entry.entry_id]["event_uids"] = new_uids
+
+            _LOGGER.info(
+                "Calendar sync complete for %s: %d events tracked",
+                self.contract_name,
+                len(new_uids),
+            )
+
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to sync calendar events for %s: %s",
+                self.contract_name,
+                err,
+            )

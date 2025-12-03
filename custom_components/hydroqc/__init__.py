@@ -53,6 +53,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
+    # Restore calendar event UIDs from previous session (if any)
+    entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+    if isinstance(entry_data, dict) and "event_uids" in entry_data:
+        coordinator._created_event_uids = entry_data["event_uids"]
+    else:
+        # Initialize empty dict for this entry
+        hass.data[DOMAIN][entry.entry_id] = coordinator
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register services (only once, first entry sets them up)
