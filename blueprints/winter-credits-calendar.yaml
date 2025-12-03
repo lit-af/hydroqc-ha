@@ -1,0 +1,180 @@
+blueprint:
+  name: Hydro-Québec Crédits Hivernaux (Événements de calendrier)
+  description: '# Gestion des événements de crédit hivernal via calendrier.
+
+
+    Ce blueprint utilise les événements de calendrier créés automatiquement par l''intégration
+    Hydro-Québec pour déclencher vos automatisations lors des périodes de pointe critique
+    et non-critique (si configuré).
+
+
+    **Prérequis** : Vous devez avoir configuré un calendrier dans les options de
+    votre intégration Hydro-Québec D+CPC (Crédits Hivernaux).
+
+
+    ## Configuration
+
+
+    ### Sélection du calendrier
+
+    Sélectionnez le calendrier que vous avez configuré dans l''intégration Hydro-Québec
+    pour recevoir les événements de pointe.
+
+
+    ### Période de pré-chauffage
+
+    Définissez combien de temps avant le début de l''événement vous souhaitez commencer
+    le pré-chauffage de votre résidence (en minutes).
+
+
+    ### Périodes d''ancrage
+
+    Les périodes d''ancrage sont des périodes de notification avant les pointes :
+
+    - Pointes du matin (AM, 6h-10h) : Ancrage débute 5h avant, se termine 2h avant la pointe
+
+    - Pointes du soir (PM, 16h-20h) : Ancrage débute 4h avant, se termine 2h avant la pointe
+
+
+    Ce blueprint utilise des déclencheurs multiples pour capturer toutes les combinaisons possibles.
+    Les valeurs par défaut couvrent les deux cas (matin et soir), déclenchant aux moments appropriés
+    selon l''événement de calendrier.
+
+
+    ### Actions
+
+
+    Définition des actions à effectuer dans Home-Assistant lors de chaque début et
+    fin de périodes.
+
+
+    **Note** : Ce blueprint déclenche les actions pour tous les événements du calendrier.
+    Si vous avez activé les pointes non-critiques dans votre configuration, les actions
+    seront déclenchées pour ces événements également. Utilisez des conditions dans
+    vos actions si vous souhaitez différencier les comportements.
+
+
+    Vous trouverez plus de détails sur les logiques applicables pour les crédits hivernaux
+
+    dans la [documentation Hydro-Québec](https://www.hydroquebec.com/residentiel/espace-clients/tarifs/option-credit-hivernal.html).
+
+    '
+  domain: automation
+  input:
+    hydroqc_calendar:
+      name: Calendrier Hydro-Québec
+      description: Sélectionnez le calendrier configuré dans l'intégration Hydro-Québec pour les événements de pointe
+      selector:
+        entity:
+          domain: calendar
+          multiple: false
+    preheat_offset:
+      name: Délai de pré-chauffage (minutes)
+      description: Temps avant le début de l'événement pour commencer le pré-chauffage (ex. 120 minutes)
+      default: 120
+      selector:
+        number:
+          min: 0
+          max: 240
+          step: 15
+          unit_of_measurement: minutes
+          mode: slider
+    anchor_start_morning_action:
+      name: (Optionnel) Action début ancrage matin
+      description: 'Actions à effectuer 5 heures avant une pointe du matin (AM). Se déclenche vers 1h pour une pointe à 6h.'
+      default: []
+      selector:
+        action: {}
+    anchor_start_evening_action:
+      name: (Optionnel) Action début ancrage soir
+      description: 'Actions à effectuer 4 heures avant une pointe du soir (PM). Se déclenche vers 12h pour une pointe à 16h.'
+      default: []
+      selector:
+        action: {}
+    anchor_end_action:
+      name: (Optionnel) Action fin ancrage
+      description: 'Actions à effectuer 2 heures avant le début de toute pointe (AM ou PM). C''est la fin de la période d''ancrage.'
+      default: []
+      selector:
+        action: {}
+    pre_heat_start_action:
+      name: Action de pré-chauffage
+      description: Actions à effectuer avant la période de pointe pour pré-chauffer votre résidence.
+      default: []
+      selector:
+        action: {}
+    peak_start_action:
+      name: Action début pointe
+      description: Actions à effectuer au début de la période de pointe pour réduire votre consommation électrique.
+      default: []
+      selector:
+        action: {}
+    peak_end_action:
+      name: Action fin pointe
+      description: Actions à effectuer à la fin de la période de pointe pour rétablir votre consommation normale.
+      default: []
+      selector:
+        action: {}
+  source_url: https://github.com/hydroqc/hydroqc-ha/blob/main/blueprints/winter-credits-calendar.yaml
+mode: parallel
+trigger:
+  # Morning anchor start: 5 hours before (for AM peaks, e.g., 1h for 6h peak)
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: start
+    offset: "-5:00:00"
+    id: anchor_start_morning_trigger
+  # Evening anchor start: 4 hours before (for PM peaks, e.g., 12h for 16h peak)
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: start
+    offset: "-4:00:00"
+    id: anchor_start_evening_trigger
+  # Anchor end: 2 hours before (applies to both AM and PM peaks)
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: start
+    offset: "-2:00:00"
+    id: anchor_end_trigger
+  # Pre-heat start: configurable offset before peak
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: start
+    offset: !input preheat_offset
+    id: pre_heat_trigger
+  # Peak start
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: start
+    id: peak_start_trigger
+  # Peak end
+  - platform: calendar
+    entity_id: !input hydroqc_calendar
+    event: end
+    id: peak_end_trigger
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: anchor_start_morning_trigger
+        sequence: !input anchor_start_morning_action
+      - conditions:
+          - condition: trigger
+            id: anchor_start_evening_trigger
+        sequence: !input anchor_start_evening_action
+      - conditions:
+          - condition: trigger
+            id: anchor_end_trigger
+        sequence: !input anchor_end_action
+      - conditions:
+          - condition: trigger
+            id: pre_heat_trigger
+        sequence: !input pre_heat_start_action
+      - conditions:
+          - condition: trigger
+            id: peak_start_trigger
+        sequence: !input peak_start_action
+      - conditions:
+          - condition: trigger
+            id: peak_end_trigger
+        sequence: !input peak_end_action

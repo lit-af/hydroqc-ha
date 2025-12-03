@@ -11,6 +11,9 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.selector import (
+    BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -28,14 +31,17 @@ from .const import (
     AUTH_MODE_PORTAL,
     CONF_ACCOUNT_ID,
     CONF_AUTH_MODE,
+    CONF_CALENDAR_ENTITY_ID,
     CONF_CONTRACT_ID,
     CONF_CONTRACT_NAME,
     CONF_CUSTOMER_ID,
     CONF_HISTORY_DAYS,
+    CONF_INCLUDE_NON_CRITICAL_PEAKS,
     CONF_PREHEAT_DURATION,
     CONF_RATE,
     CONF_RATE_OPTION,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
     DEFAULT_PREHEAT_DURATION,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
@@ -334,12 +340,12 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Configure preheat duration for DPC/DCPC rates."""
         if user_input is not None:
-            # Store preheat duration and proceed to import history step
+            # Store preheat duration and proceed to calendar step
             if self._selected_contract is not None:
                 self._selected_contract["preheat_duration"] = user_input.get(
                     CONF_PREHEAT_DURATION, DEFAULT_PREHEAT_DURATION
                 )
-            return await self.async_step_import_history()
+            return await self.async_step_calendar()
 
         if self._selected_contract is None:
             return self.async_abort(reason="missing_contract")
@@ -367,6 +373,42 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"rate_name": rate_name},
         )
 
+    async def async_step_calendar(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure calendar entity for peak events (DPC/DCPC rates only)."""
+        if self._selected_contract is None:
+            return self.async_abort(reason="missing_contract")
+
+        if user_input is not None:
+            # Store calendar configuration
+            calendar_entity_id = user_input.get(CONF_CALENDAR_ENTITY_ID, "").strip()
+            if calendar_entity_id:
+                self._selected_contract["calendar_entity_id"] = calendar_entity_id
+                self._selected_contract["include_non_critical_peaks"] = user_input.get(
+                    CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS
+                )
+
+            # Proceed to import history step
+            return await self.async_step_import_history()
+
+        # Show calendar configuration form
+        return self.async_show_form(
+            step_id="calendar",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_CALENDAR_ENTITY_ID): EntitySelector(
+                        EntitySelectorConfig(domain="calendar")
+                    ),
+                    vol.Required(
+                        CONF_INCLUDE_NON_CRITICAL_PEAKS,
+                        default=DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
+                    ): BooleanSelector(),
+                }
+            ),
+            description_placeholders={"contract_name": self._contract_name or "Contract"},
+        )
+
     async def async_step_import_history(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -383,22 +425,33 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             preheat_duration = self._selected_contract.get(
                 "preheat_duration", DEFAULT_PREHEAT_DURATION
             )
+            calendar_entity_id = self._selected_contract.get("calendar_entity_id", "")
+            include_non_critical_peaks = self._selected_contract.get(
+                "include_non_critical_peaks", DEFAULT_INCLUDE_NON_CRITICAL_PEAKS
+            )
+
+            entry_data: dict[str, Any] = {
+                CONF_AUTH_MODE: AUTH_MODE_PORTAL,
+                CONF_USERNAME: self._username,
+                CONF_PASSWORD: self._password,
+                CONF_CONTRACT_NAME: self._contract_name,
+                CONF_CUSTOMER_ID: self._selected_contract["customer_id"],
+                CONF_ACCOUNT_ID: self._selected_contract["account_id"],
+                CONF_CONTRACT_ID: self._selected_contract["contract_id"],
+                CONF_RATE: self._selected_contract["rate"],
+                CONF_RATE_OPTION: self._selected_contract["rate_option"],
+                CONF_PREHEAT_DURATION: preheat_duration,
+                CONF_HISTORY_DAYS: history_days,
+            }
+
+            # Add calendar configuration if provided
+            if calendar_entity_id:
+                entry_data[CONF_CALENDAR_ENTITY_ID] = calendar_entity_id
+                entry_data[CONF_INCLUDE_NON_CRITICAL_PEAKS] = include_non_critical_peaks
 
             return self.async_create_entry(
                 title=f"{self._contract_name} ({self._selected_contract['rate']}{self._selected_contract['rate_option']})",
-                data={
-                    CONF_AUTH_MODE: AUTH_MODE_PORTAL,
-                    CONF_USERNAME: self._username,
-                    CONF_PASSWORD: self._password,
-                    CONF_CONTRACT_NAME: self._contract_name,
-                    CONF_CUSTOMER_ID: self._selected_contract["customer_id"],
-                    CONF_ACCOUNT_ID: self._selected_contract["account_id"],
-                    CONF_CONTRACT_ID: self._selected_contract["contract_id"],
-                    CONF_RATE: self._selected_contract["rate"],
-                    CONF_RATE_OPTION: self._selected_contract["rate_option"],
-                    CONF_PREHEAT_DURATION: preheat_duration,
-                    CONF_HISTORY_DAYS: history_days,
-                },
+                data=entry_data,
             )
 
         return self.async_show_form(
@@ -474,9 +527,14 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             rate, rate_option = rate_selection.split("|")
             rate_with_option = f"{rate}{rate_option}"
 
-            # Use contract name as unique ID for opendata mode
-            await self.async_set_unique_id(f"opendata_{contract_name.lower().replace(' ', '_')}")
-            self._abort_if_unique_id_configured()
+            # Store for calendar step
+            self._contract_name = contract_name
+            if self._selected_contract is None:
+                self._selected_contract = {}
+
+            self._selected_contract["rate"] = rate
+            self._selected_contract["rate_option"] = rate_option
+            self._selected_contract["sector"] = self._selected_sector
 
             # Only save preheat duration for rates that use it (DPC, D+CPC, and commercial peak rates)
             preheat_duration = DEFAULT_PREHEAT_DURATION
@@ -490,6 +548,16 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "M-OEA",
             ]:
                 preheat_duration = user_input.get(CONF_PREHEAT_DURATION, DEFAULT_PREHEAT_DURATION)
+
+            self._selected_contract["preheat_duration"] = preheat_duration
+
+            # Check if this rate needs calendar configuration
+            if rate_with_option in ["DPC", "DCPC"]:
+                return await self.async_step_calendar_opendata()
+
+            # For other rates, create entry directly
+            await self.async_set_unique_id(f"opendata_{contract_name.lower().replace(' ', '_')}")
+            self._abort_if_unique_id_configured()
 
             sector_label = (
                 SECTOR_MAPPING.get(self._selected_sector, self._selected_sector)
@@ -543,6 +611,68 @@ class HydroQcConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"sector": sector_label},
         )
 
+    async def async_step_calendar_opendata(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure calendar entity for peak events (OpenData mode with DPC/DCPC rates)."""
+        if self._selected_contract is None or self._contract_name is None:
+            return self.async_abort(reason="missing_contract")
+
+        if user_input is not None:
+            # Use contract name as unique ID for opendata mode
+            await self.async_set_unique_id(
+                f"opendata_{self._contract_name.lower().replace(' ', '_')}"
+            )
+            self._abort_if_unique_id_configured()
+
+            # Store calendar configuration
+            calendar_entity_id = user_input.get(CONF_CALENDAR_ENTITY_ID, "").strip()
+
+            entry_data: dict[str, Any] = {
+                CONF_AUTH_MODE: AUTH_MODE_OPENDATA,
+                CONF_CONTRACT_NAME: self._contract_name,
+                CONF_RATE: self._selected_contract["rate"],
+                CONF_RATE_OPTION: self._selected_contract["rate_option"],
+                CONF_PREHEAT_DURATION: self._selected_contract.get(
+                    "preheat_duration", DEFAULT_PREHEAT_DURATION
+                ),
+            }
+
+            # Add calendar configuration if provided
+            if calendar_entity_id:
+                entry_data[CONF_CALENDAR_ENTITY_ID] = calendar_entity_id
+                entry_data[CONF_INCLUDE_NON_CRITICAL_PEAKS] = user_input.get(
+                    CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS
+                )
+
+            sector_label = (
+                SECTOR_MAPPING.get(self._selected_sector, self._selected_sector)
+                if self._selected_sector
+                else "Unknown"
+            )
+
+            return self.async_create_entry(
+                title=f"{self._contract_name} ({sector_label} - {self._selected_contract['rate']}{self._selected_contract['rate_option']})",
+                data=entry_data,
+            )
+
+        # Show calendar configuration form
+        return self.async_show_form(
+            step_id="calendar_opendata",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_CALENDAR_ENTITY_ID): EntitySelector(
+                        EntitySelectorConfig(domain="calendar")
+                    ),
+                    vol.Required(
+                        CONF_INCLUDE_NON_CRITICAL_PEAKS,
+                        default=DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
+                    ): BooleanSelector(),
+                }
+            ),
+            description_placeholders={"contract_name": self._contract_name or "Contract"},
+        )
+
     @staticmethod
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,  # noqa: ARG004
@@ -559,39 +689,67 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        # Check if rate supports calendar configuration
+        rate = self.config_entry.data.get(CONF_RATE, "")
+        rate_option = self.config_entry.data.get(CONF_RATE_OPTION, "")
+        rate_with_option = f"{rate}{rate_option}"
+        supports_calendar = rate_with_option in ["DPC", "DCPC"]
+
+        # Build schema based on rate capabilities
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(
+                CONF_UPDATE_INTERVAL,
+                default=self.config_entry.options.get(
+                    CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
+                ),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=30,
+                    max=600,
+                    mode=NumberSelectorMode.BOX,
+                    unit_of_measurement="seconds",
+                )
+            ),
+            vol.Optional(
+                CONF_PREHEAT_DURATION,
+                default=self.config_entry.options.get(
+                    CONF_PREHEAT_DURATION,
+                    self.config_entry.data.get(
+                        CONF_PREHEAT_DURATION, DEFAULT_PREHEAT_DURATION
+                    ),
+                ),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=240,
+                    mode=NumberSelectorMode.BOX,
+                    unit_of_measurement="minutes",
+                )
+            ),
+        }
+
+        # Add calendar options for DPC/DCPC rates
+        if supports_calendar:
+            current_calendar = self.config_entry.options.get(
+                CONF_CALENDAR_ENTITY_ID,
+                self.config_entry.data.get(CONF_CALENDAR_ENTITY_ID, ""),
+            )
+            schema_dict[vol.Optional(CONF_CALENDAR_ENTITY_ID, default=current_calendar)] = (
+                EntitySelector(EntitySelectorConfig(domain="calendar"))
+            )
+            schema_dict[
+                vol.Required(
+                    CONF_INCLUDE_NON_CRITICAL_PEAKS,
+                    default=self.config_entry.options.get(
+                        CONF_INCLUDE_NON_CRITICAL_PEAKS,
+                        self.config_entry.data.get(
+                            CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS
+                        ),
+                    ),
+                )
+            ] = BooleanSelector()
+
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_UPDATE_INTERVAL,
-                        default=self.config_entry.options.get(
-                            CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=30,
-                            max=600,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="seconds",
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_PREHEAT_DURATION,
-                        default=self.config_entry.options.get(
-                            CONF_PREHEAT_DURATION,
-                            self.config_entry.data.get(
-                                CONF_PREHEAT_DURATION, DEFAULT_PREHEAT_DURATION
-                            ),
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=0,
-                            max=240,
-                            mode=NumberSelectorMode.BOX,
-                            unit_of_measurement="minutes",
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(schema_dict),
         )
