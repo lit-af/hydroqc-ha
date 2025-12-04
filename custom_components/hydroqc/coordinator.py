@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import slugify
 
@@ -50,6 +51,10 @@ from .public_data_client import PublicDataClient
 from .statistics_manager import StatisticsManager
 
 _LOGGER = logging.getLogger(__name__)
+
+# Storage for calendar event UIDs (persists across restarts)
+STORAGE_VERSION = 1
+STORAGE_KEY_CALENDAR_UIDS = "hydroqc.calendar_uids"
 
 
 class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -103,8 +108,16 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             entry.data.get(CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS),
         )
 
-        # Track created calendar event UIDs (persisted in hass.data)
+        # Track created calendar event UIDs (persisted across restarts)
         self._created_event_uids: set[str] = set()
+        # Storage for persisting calendar event UIDs
+        self._calendar_uid_store: Store | None = None
+        if self._calendar_entity_id:
+            # Create unique storage key per contract to avoid conflicts
+            storage_key = f"{STORAGE_KEY_CALENDAR_UIDS}.{entry.entry_id}"
+            self._calendar_uid_store = Store(
+                hass, STORAGE_VERSION, storage_key, encoder=None
+            )
 
         # Initialize webuser if in portal mode
         if self._auth_mode == AUTH_MODE_PORTAL:
@@ -190,6 +203,40 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         return True
+
+    async def async_load_calendar_uids(self) -> None:
+        """Load persisted calendar event UIDs from storage."""
+        if not self._calendar_uid_store:
+            return
+
+        try:
+            data = await self._calendar_uid_store.async_load()
+            if data and isinstance(data, dict):
+                uids = data.get("uids", [])
+                self._created_event_uids = set(uids)
+                _LOGGER.info(
+                    "Loaded %d persisted calendar event UIDs for %s",
+                    len(self._created_event_uids),
+                    self.contract_name,
+                )
+        except Exception as err:
+            _LOGGER.warning("Failed to load calendar UIDs from storage: %s", err)
+            self._created_event_uids = set()
+
+    async def async_save_calendar_uids(self) -> None:
+        """Save calendar event UIDs to persistent storage."""
+        if not self._calendar_uid_store:
+            return
+
+        try:
+            data = {"uids": list(self._created_event_uids)}
+            await self._calendar_uid_store.async_save(data)
+            _LOGGER.debug(
+                "Saved %d calendar event UIDs to storage",
+                len(self._created_event_uids),
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to save calendar UIDs to storage: %s", err)
 
     def _ensure_helper_modules(self) -> None:
         """Ensure helper modules are initialized (lazy initialization)."""
@@ -740,8 +787,9 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._include_non_critical_peaks or False,
             )
 
-            # Update stored UIDs (stored as coordinator attribute)
+            # Update stored UIDs and persist to storage
             self._created_event_uids = new_uids
+            await self.async_save_calendar_uids()
 
             _LOGGER.info(
                 "Calendar sync complete for %s: %d events tracked",
