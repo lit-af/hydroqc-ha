@@ -82,10 +82,13 @@ async def async_create_peak_event(
 
     # Format description with French datetime strings, metadata, and UID for duplicate detection
     import datetime
+    from zoneinfo import ZoneInfo
 
     start_str = peak_event.start_date.strftime("%H:%M")
     end_str = peak_event.end_date.strftime("%H:%M")
-    created_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    # Use local timezone (America/Toronto) for creation timestamp
+    local_tz = ZoneInfo("America/Toronto")
+    created_at = datetime.datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     critical_str = "Oui" if peak_event.is_critical else "Non"
 
     description = DESCRIPTION_TEMPLATE.format(

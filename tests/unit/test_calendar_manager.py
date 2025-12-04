@@ -362,7 +362,7 @@ def test_event_description_template() -> None:
     description = calendar_manager.DESCRIPTION_TEMPLATE.format(
         start="06:00",
         end="10:00",
-        created_at="2025-12-04 12:00:00 UTC",
+        created_at="2025-12-04 12:00:00 EST",
         rate="DCPC",
         critical="Oui",
         uid=uid,
@@ -371,7 +371,7 @@ def test_event_description_template() -> None:
     assert "Réduisez votre consommation" in description
     assert "Début: 06:00" in description
     assert "Fin: 10:00" in description
-    assert "Ajouté le: 2025-12-04 12:00:00 UTC" in description
+    assert "Ajouté le: 2025-12-04 12:00:00 EST" in description
     assert "Tarif: DCPC" in description
     assert "Critique: Oui" in description
     assert f"ID: {uid}" in description
