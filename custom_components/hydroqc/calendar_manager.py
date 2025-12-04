@@ -140,6 +140,63 @@ async def async_create_peak_event(
         raise
 
 
+async def async_get_existing_event_uids(
+    hass: HomeAssistant,
+    calendar_id: str,
+    start_date: datetime,
+    end_date: datetime,
+) -> set[str]:
+    """Get UIDs of existing calendar events by checking their descriptions.
+
+    Args:
+        hass: Home Assistant instance
+        calendar_id: Entity ID of the target calendar
+        start_date: Start of date range to check
+        end_date: End of date range to check
+
+    Returns:
+        Set of UIDs found in existing event descriptions
+    """
+    existing_uids = set()
+
+    try:
+        # Call calendar.list_events service to get existing events
+        response = await hass.services.async_call(
+            "calendar",
+            "list_events",
+            service_data={
+                "start_date_time": start_date.isoformat(),
+                "end_date_time": end_date.isoformat(),
+            },
+            target={"entity_id": calendar_id},
+            blocking=True,
+            return_response=True,
+        )
+
+        # Parse response to extract UIDs from descriptions
+        if response and calendar_id in response:
+            events = response[calendar_id].get("events", [])
+            for event in events:
+                description = event.get("description", "")
+                # Extract UID from description (format: "ID: hydroqc_...")
+                if "ID: hydroqc_" in description:
+                    # Find the UID in the description
+                    uid_start = description.find("ID: hydroqc_")
+                    if uid_start != -1:
+                        uid_line = description[uid_start:].split("\n")[0]
+                        uid = uid_line.replace("ID: ", "").strip()
+                        if uid.startswith("hydroqc_"):
+                            existing_uids.add(uid)
+                            _LOGGER.debug("Found existing event with UID: %s", uid)
+
+        _LOGGER.info("Found %d existing hydroqc events in calendar", len(existing_uids))
+
+    except Exception as err:
+        _LOGGER.warning("Failed to query existing calendar events: %s", err)
+
+    return existing_uids
+
+
 async def async_sync_events(
     hass: HomeAssistant,
     calendar_id: str,
@@ -179,6 +236,23 @@ async def async_sync_events(
         _LOGGER.debug("No future peaks to sync for %s", contract_name)
         return stored_uids
 
+    # Query calendar for existing events to verify they're actually there
+    # This handles cases where calendar was cleared but storage still has UIDs
+    if future_peaks:
+        start_date = min(p.start_date for p in future_peaks)
+        end_date = max(p.end_date for p in future_peaks)
+        existing_uids = await async_get_existing_event_uids(hass, calendar_id, start_date, end_date)
+        # Merge with stored UIDs to avoid recreating
+        all_existing_uids = stored_uids | existing_uids
+        _LOGGER.debug(
+            "Total tracked UIDs: %d (stored: %d, found in calendar: %d)",
+            len(all_existing_uids),
+            len(stored_uids),
+            len(existing_uids),
+        )
+    else:
+        all_existing_uids = stored_uids
+
     _LOGGER.info(
         "Syncing %d peak events to calendar %s (include_non_critical=%s)",
         len(future_peaks),
@@ -187,12 +261,12 @@ async def async_sync_events(
     )
 
     # Create events sequentially with delay
-    new_uids = set(stored_uids)
+    new_uids = set(all_existing_uids)
     for peak in future_peaks:
         uid = generate_event_uid(contract_id, peak.start_date)
 
-        # Skip if already created
-        if uid in stored_uids:
+        # Skip if already created (check against all existing UIDs from storage + calendar)
+        if uid in all_existing_uids:
             _LOGGER.debug("Skipping existing event %s", uid)
             continue
 
