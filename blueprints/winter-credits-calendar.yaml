@@ -54,6 +54,23 @@ blueprint:
     vos actions si vous souhaitez différencier les comportements.
 
 
+    ### Métadonnées disponibles
+
+
+    Les événements de calendrier incluent des métadonnées accessibles dans vos actions :
+
+    - trigger.calendar_event.summary : Titre (🔴 Pointe critique / ⚪ Pointe régulière)
+
+    - trigger.calendar_event.location : Tarif (Hydro-Québec DCPC)
+
+    - trigger.calendar_event.description : Contient Critique: Oui/Non, Tarif: DCPC, etc.
+
+
+    **Exemple de condition** pour différencier pointes critiques et non-critiques :
+
+    condition: template / value_template: "{{ ''Critique: Oui'' in trigger.calendar_event.description }}"
+
+
     Vous trouverez plus de détails sur les logiques applicables pour les crédits hivernaux
 
     dans la [documentation Hydro-Québec](https://www.hydroquebec.com/residentiel/espace-clients/tarifs/option-credit-hivernal.html).
@@ -152,11 +169,17 @@ trigger:
     entity_id: !input hydroqc_calendar
     event: end
     id: peak_end_trigger
+# Add condition to filter only peak events (title contains "pointe")
+condition:
+  - condition: template
+    value_template: "{{ 'pointe' in trigger.calendar_event.summary | lower }}"
 action:
   - choose:
       - conditions:
           - condition: trigger
             id: anchor_start_morning_trigger
+          # Optional: Add rate filter (trigger.calendar_event.location contains 'DCPC')
+          # Optional: Check if critical (trigger.calendar_event.description contains 'Critique: Oui')
         sequence: !input anchor_start_morning_action
       - conditions:
           - condition: trigger

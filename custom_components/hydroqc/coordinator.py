@@ -91,6 +91,8 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._csv_import_task: asyncio.Task[None] | None = None
         # Track regular sync task (for recent data updates)
         self._regular_sync_task: asyncio.Task[None] | None = None
+        # Track calendar sync task (prevent concurrent syncs)
+        self._calendar_sync_task: asyncio.Task[None] | None = None
 
         # Track first refresh completion (set by __init__.py after setup)
         self._first_refresh_done: bool = False
@@ -207,6 +209,7 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_load_calendar_uids(self) -> None:
         """Load persisted calendar event UIDs from storage."""
         if not self._calendar_uid_store:
+            _LOGGER.debug("No calendar UID store configured")
             return
 
         try:
@@ -215,10 +218,13 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 uids = data.get("uids", [])
                 self._created_event_uids = set(uids)
                 _LOGGER.info(
-                    "Loaded %d persisted calendar event UIDs for %s",
+                    "Loaded %d persisted calendar event UIDs for %s: %s",
                     len(self._created_event_uids),
                     self.contract_name,
+                    list(self._created_event_uids)[:3] if self._created_event_uids else "[]",
                 )
+            else:
+                _LOGGER.info("No persisted calendar UIDs found for %s", self.contract_name)
         except Exception as err:
             _LOGGER.warning("Failed to load calendar UIDs from storage: %s", err)
             self._created_event_uids = set()
@@ -358,8 +364,12 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._regular_sync_task = asyncio.create_task(self._async_regular_consumption_sync())
 
         # Sync calendar events if configured and peak data available
+        # Only start sync if not already running (prevent duplicate event creation)
         if self._calendar_entity_id and self.public_client.peak_handler:
-            self._calendar_sync_task = asyncio.create_task(self._async_sync_calendar_events())
+            if self._calendar_sync_task is None or self._calendar_sync_task.done():
+                self._calendar_sync_task = asyncio.create_task(self._async_sync_calendar_events())
+            else:
+                _LOGGER.debug("Calendar sync already in progress, skipping")
 
         return data
 
