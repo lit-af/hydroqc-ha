@@ -15,11 +15,18 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # French-only event templates (standardized for blueprint compatibility)
-TITLE_CRITICAL = "🔴 Pointe critique - {contract_name}"
-TITLE_REGULAR = "⚪ Période de pointe - {contract_name}"
+TITLE_CRITICAL = "🔴 Pointe critique"
+TITLE_REGULAR = "⚪ Pointe régulière"
 
 DESCRIPTION_TEMPLATE = (
-    "Réduisez votre consommation d'électricité pendant cette période.\nDébut: {start}\nFin: {end}"
+    "Réduisez votre consommation d'électricité pendant cette période.\n\n"
+    "Début: {start}\n"
+    "Fin: {end}\n\n"
+    "--- Métadonnées ---\n"
+    "Ajouté le: {created_at}\n"
+    "Tarif: {rate}\n"
+    "Critique: {critical}\n"
+    "ID: {uid}"
 )
 
 # Delay between calendar event creation calls (seconds)
@@ -45,6 +52,7 @@ async def async_create_peak_event(
     peak_event: PeakEvent,
     contract_id: str,
     contract_name: str,
+    rate: str,
 ) -> str:
     """Create a calendar event for a peak period.
 
@@ -54,6 +62,7 @@ async def async_create_peak_event(
         peak_event: Peak event data from PeakHandler
         contract_id: Contract identifier for UID generation
         contract_name: Human-readable contract name for event title
+        rate: Rate code (DPC or DCPC)
 
     Returns:
         The UID of the created event
@@ -71,18 +80,31 @@ async def async_create_peak_event(
         else TITLE_REGULAR.format(contract_name=contract_name)
     )
 
-    # Format description with French datetime strings
+    # Format description with French datetime strings, metadata, and UID for duplicate detection
+    import datetime
+
     start_str = peak_event.start_date.strftime("%H:%M")
     end_str = peak_event.end_date.strftime("%H:%M")
-    description = DESCRIPTION_TEMPLATE.format(start=start_str, end=end_str)
+    created_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    critical_str = "Oui" if peak_event.is_critical else "Non"
 
-    # Prepare service data
+    description = DESCRIPTION_TEMPLATE.format(
+        start=start_str,
+        end=end_str,
+        created_at=created_at,
+        rate=rate,
+        critical=critical_str,
+        uid=uid,
+    )
+
+    # Prepare service data (no uid field - not supported by HA calendar service)
+    # Use location field to store rate for easy filtering in automations
     service_data = {
         "summary": title,
         "description": description,
         "start_date_time": peak_event.start_date.isoformat(),
         "end_date_time": peak_event.end_date.isoformat(),
-        "uid": uid,
+        "location": f"Hydro-Québec {rate}",
     }
 
     _LOGGER.debug(
@@ -122,6 +144,7 @@ async def async_sync_events(
     stored_uids: set[str],
     contract_id: str,
     contract_name: str,
+    rate: str,
     include_non_critical: bool,
 ) -> set[str]:
     """Sync peak events to a calendar entity.
@@ -133,6 +156,7 @@ async def async_sync_events(
         stored_uids: Set of previously created event UIDs (for deduplication)
         contract_id: Contract identifier for UID generation
         contract_name: Human-readable contract name for event titles
+        rate: Rate code (DPC or DCPC)
         include_non_critical: Whether to include non-critical peak events
 
     Returns:
@@ -172,7 +196,7 @@ async def async_sync_events(
         try:
             # Create event
             created_uid = await async_create_peak_event(
-                hass, calendar_id, peak, contract_id, contract_name
+                hass, calendar_id, peak, contract_id, contract_name, rate
             )
             new_uids.add(created_uid)
 

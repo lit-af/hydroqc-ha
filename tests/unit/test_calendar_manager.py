@@ -101,7 +101,7 @@ async def test_create_peak_event_critical(
     contract_name = "Home"
 
     uid = await calendar_manager.async_create_peak_event(
-        mock_hass, calendar_id, sample_critical_peak, contract_id, contract_name
+        mock_hass, calendar_id, sample_critical_peak, contract_id, contract_name, "DCPC"
     )
 
     # Verify service call
@@ -112,13 +112,14 @@ async def test_create_peak_event_critical(
     assert call_args.args[1] == "create_event"
 
     service_data = call_args.kwargs["service_data"]
-    assert "🔴 Pointe critique - Home" in service_data["summary"]
+    assert service_data["summary"] == "🔴 Pointe critique"
     assert "Réduisez votre consommation" in service_data["description"]
     assert "06:00" in service_data["description"]
     assert "10:00" in service_data["description"]
+    assert uid in service_data["description"]  # UID is in description for duplicate detection
     assert service_data["start_date_time"] == sample_critical_peak.start_date.isoformat()
     assert service_data["end_date_time"] == sample_critical_peak.end_date.isoformat()
-    assert service_data["uid"] == uid
+    assert "uid" not in service_data  # UID field not supported by HA calendar service
 
     # Verify target
     assert call_args.kwargs["target"] == {"entity_id": calendar_id}
@@ -135,16 +136,17 @@ async def test_create_peak_event_regular(
     contract_name = "Cottage"
 
     uid = await calendar_manager.async_create_peak_event(
-        mock_hass, calendar_id, sample_regular_peak, contract_id, contract_name
+        mock_hass, calendar_id, sample_regular_peak, contract_id, contract_name, "DCPC"
     )
 
     call_args = mock_hass.services.async_call.call_args
     service_data = call_args.kwargs["service_data"]
 
-    assert "⚪ Période de pointe - Cottage" in service_data["summary"]
+    assert service_data["summary"] == "⚪ Pointe régulière"
     assert "16:00" in service_data["description"]
     assert "20:00" in service_data["description"]
-    assert service_data["uid"] == uid
+    assert uid in service_data["description"]  # UID is in description
+    assert "uid" not in service_data  # UID field not supported by HA calendar service
 
 
 @pytest.mark.asyncio
@@ -161,6 +163,7 @@ async def test_create_peak_event_service_failure(
             sample_critical_peak,
             "contract_123",
             "Home",
+            "DPC",
         )
 
 
@@ -191,6 +194,7 @@ async def test_sync_events_creates_future_events_only(
         set(),
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=True,
     )
 
@@ -214,6 +218,7 @@ async def test_sync_events_filters_by_criticality(
         set(),
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=False,
     )
 
@@ -239,6 +244,7 @@ async def test_sync_events_skips_existing(
         stored_uids,
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=True,
     )
 
@@ -262,7 +268,8 @@ async def test_sync_events_sequential_with_delay(
             set(),
             "contract_123",
             "Home",
-            include_non_critical=True,
+        "DCPC",
+        include_non_critical=True,
         )
 
         # Should sleep once (between two events, not after the last)
@@ -289,6 +296,7 @@ async def test_sync_events_continues_on_individual_failure(
         set(),
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=True,
     )
 
@@ -308,6 +316,7 @@ async def test_sync_events_empty_list(mock_hass: MagicMock) -> None:
         set(),
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=True,
     )
 
@@ -329,6 +338,7 @@ async def test_sync_events_includes_all_when_flag_true(
         set(),
         "contract_123",
         "Home",
+        "DCPC",
         include_non_critical=True,
     )
 
@@ -339,19 +349,29 @@ async def test_sync_events_includes_all_when_flag_true(
 
 def test_event_title_templates() -> None:
     """Test French-only event title templates."""
-    contract_name = "Test Home"
+    critical_title = calendar_manager.TITLE_CRITICAL
+    regular_title = calendar_manager.TITLE_REGULAR
 
-    critical_title = calendar_manager.TITLE_CRITICAL.format(contract_name=contract_name)
-    regular_title = calendar_manager.TITLE_REGULAR.format(contract_name=contract_name)
-
-    assert critical_title == "🔴 Pointe critique - Test Home"
-    assert regular_title == "⚪ Période de pointe - Test Home"
+    assert critical_title == "🔴 Pointe critique"
+    assert regular_title == "⚪ Pointe régulière"
 
 
 def test_event_description_template() -> None:
     """Test French-only event description template."""
-    description = calendar_manager.DESCRIPTION_TEMPLATE.format(start="06:00", end="10:00")
+    uid = "test_uid_123"
+    description = calendar_manager.DESCRIPTION_TEMPLATE.format(
+        start="06:00",
+        end="10:00",
+        created_at="2025-12-04 12:00:00 UTC",
+        rate="DCPC",
+        critical="Oui",
+        uid=uid,
+    )
 
     assert "Réduisez votre consommation" in description
     assert "Début: 06:00" in description
     assert "Fin: 10:00" in description
+    assert "Ajouté le: 2025-12-04 12:00:00 UTC" in description
+    assert "Tarif: DCPC" in description
+    assert "Critique: Oui" in description
+    assert f"ID: {uid}" in description

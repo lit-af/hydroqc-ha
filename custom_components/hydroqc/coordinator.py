@@ -736,19 +736,12 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._created_event_uids,
                 self.contract_id,
                 self.contract_name,
+                self.rate_with_option,
                 self._include_non_critical_peaks or False,
             )
 
-            # Update stored UIDs
+            # Update stored UIDs (stored as coordinator attribute)
             self._created_event_uids = new_uids
-
-            # Persist UIDs in hass.data for recovery after restart
-            if DOMAIN not in self.hass.data:
-                self.hass.data[DOMAIN] = {}
-            if self.entry.entry_id not in self.hass.data[DOMAIN]:
-                self.hass.data[DOMAIN][self.entry.entry_id] = {}
-
-            self.hass.data[DOMAIN][self.entry.entry_id]["event_uids"] = new_uids
 
             _LOGGER.info(
                 "Calendar sync complete for %s: %d events tracked",
