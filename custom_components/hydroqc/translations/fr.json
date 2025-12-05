@@ -45,6 +45,30 @@
           "preheat_duration_minutes": "Durée avant les pointes critiques pour déclencher le préchauffage (0-240 minutes, défaut: 120)"
         }
       },
+      "calendar": {
+        "title": "Intégration calendrier (optionnel)",
+        "description": "Créer automatiquement des événements de calendrier pour les périodes de pointe critique pour {contract_name}. Les événements utilisent des titres français standardisés pour la compatibilité avec les blueprints.",
+        "data": {
+          "calendar_entity_id": "Entité calendrier (optionnel)",
+          "include_non_critical_peaks": "Inclure les pointes non critiques"
+        },
+        "data_description": {
+          "calendar_entity_id": "Sélectionnez une entité calendrier pour créer les événements de pointe. Laissez vide pour ignorer l'intégration calendrier.",
+          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut sans annonce API)"
+        }
+      },
+      "calendar_opendata": {
+        "title": "Intégration calendrier (optionnel)",
+        "description": "Créer automatiquement des événements de calendrier pour les périodes de pointe critique pour {contract_name}. Les événements utilisent des titres français standardisés pour la compatibilité avec les blueprints.",
+        "data": {
+          "calendar_entity_id": "Entité calendrier (optionnel)",
+          "include_non_critical_peaks": "Inclure les pointes non critiques"
+        },
+        "data_description": {
+          "calendar_entity_id": "Sélectionnez une entité calendrier pour créer les événements de pointe. Laissez vide pour ignorer l'intégration calendrier.",
+          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut sans annonce API)"
+        }
+      },
       "import_history": {
         "title": "Importer l'historique de consommation",
         "description": "Combien de jours d'historique de consommation souhaitez-vous importer? Les 30 derniers jours seront synchronisés automatiquement. L'historique maximum disponible est de 800 jours. Définissez à 0 pour ignorer l'importation d'historique supplémentaire. L'importation se fait en arrière-plan et peut prendre plusieurs minutes.",
@@ -97,11 +121,15 @@
         "description": "Configurer les options d'intégration",
         "data": {
           "update_interval": "Intervalle de mise à jour (secondes)",
-          "preheat_duration_minutes": "Durée de préchauffage (minutes)"
+          "preheat_duration_minutes": "Durée de préchauffage (minutes)",
+          "calendar_entity_id": "Entité calendrier (optionnel)",
+          "include_non_critical_peaks": "Inclure les pointes non critiques"
         },
         "data_description": {
           "update_interval": "Fréquence de récupération des données d'Hydro-Québec (30-600 secondes)",
-          "preheat_duration_minutes": "Durée avant les événements de pointe critique pour déclencher le préchauffage (0-240 minutes)"
+          "preheat_duration_minutes": "Durée avant les événements de pointe critique pour déclencher le préchauffage (0-240 minutes)",
+          "calendar_entity_id": "Entité calendrier pour les événements de pointe (tarifs DPC/DCPC seulement). Laissez vide pour désactiver.",
+          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut)"
         }
       }
     }

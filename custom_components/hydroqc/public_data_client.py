@@ -220,6 +220,17 @@ class PeakHandler:
             # Sort by start date
             self._events = sorted(merged_events, key=lambda e: e.start_date)
 
+            # Log critical peak date range for debugging
+            critical_peaks = [e for e in self._events if e.is_critical]
+            if critical_peaks:
+                first_critical = min(critical_peaks, key=lambda e: e.start_date)
+                last_critical = max(critical_peaks, key=lambda e: e.start_date)
+                _LOGGER.debug(
+                    "[OpenData] DCPC critical peaks: first=%s, last=%s",
+                    first_critical.start_date.strftime("%Y-%m-%d %H:%M"),
+                    last_critical.start_date.strftime("%Y-%m-%d %H:%M"),
+                )
+
             _LOGGER.debug(
                 "[OpenData] DCPC schedule: %d API events (critical) + %d generated (non-critical) = %d total",
                 len(api_events),
@@ -236,11 +247,24 @@ class PeakHandler:
         else:
             # For DPC and other rates, only use API events
             self._events = api_events
-            _LOGGER.debug(
-                "[OpenData] Loaded %d API peak events for rate %s (all critical)",
-                len(self._events),
-                self.rate_code,
-            )
+
+            # Log critical peak date range for debugging
+            if self._events:
+                first_peak = min(self._events, key=lambda e: e.start_date)
+                last_peak = max(self._events, key=lambda e: e.start_date)
+                _LOGGER.debug(
+                    "[OpenData] %s peaks: first=%s, last=%s, total=%d (all critical)",
+                    self.rate_code,
+                    first_peak.start_date.strftime("%Y-%m-%d %H:%M"),
+                    last_peak.start_date.strftime("%Y-%m-%d %H:%M"),
+                    len(self._events),
+                )
+            else:
+                _LOGGER.debug(
+                    "[OpenData] Loaded %d API peak events for rate %s (all critical)",
+                    len(self._events),
+                    self.rate_code,
+                )
 
     def _generate_dcpc_schedule(self) -> list[PeakEvent]:
         """Generate DCPC (Winter Credits) peak schedule for today and tomorrow.
@@ -273,7 +297,8 @@ class PeakHandler:
             )
             return []
 
-        # Generate peaks for today and tomorrow
+        # Generate non-critical peaks for today and tomorrow only
+        # Critical peaks beyond tomorrow come from API announcements
         generated_peaks: list[PeakEvent] = []
 
         for day_offset in [0, 1]:  # 0=today, 1=tomorrow
@@ -533,10 +558,16 @@ class PublicDataClient:
 
             # Build refine filter to filter by rate (Opendatasoft API syntax)
             # Use refine parameter: refine=offre:"TPC-DPC"
+            # Filter for events from today onwards (next 7 days)
+            tz = zoneinfo.ZoneInfo("America/Toronto")
+            today = datetime.datetime.now(tz).date()
+            today_str = today.isoformat()
+
             params: dict[str, str | int] = {
                 "limit": 100,
                 "timezone": "America/Toronto",
                 "refine": f'offre:"{hq_offers[0]}"',
+                "where": f"datedebut>='{today_str}'",
             }
 
             if len(hq_offers) > 1:

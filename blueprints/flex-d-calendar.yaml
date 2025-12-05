@@ -1,43 +1,56 @@
 blueprint:
   name: Hydro-Québec Flex D (Événements de calendrier)
-  description: '# Gestion des événements de pointe critique "Flex D" via calendrier.
+  description: |
+    # Gestion des événements de pointe critique "Flex D" via calendrier.
 
+    Ce blueprint utilise les événements de calendrier créés automatiquement par l'intégration Hydro-Québec pour déclencher vos automatisations lors des périodes de pointe critique.
 
-    Ce blueprint utilise les événements de calendrier créés automatiquement par l''intégration
-    Hydro-Québec pour déclencher vos automatisations lors des périodes de pointe critique.
-
-
-    **Prérequis** : Vous devez avoir configuré un calendrier dans les options de
-    votre intégration Hydro-Québec Flex-D (DPC).
-
+    **Prérequis** : Vous devez avoir configuré un calendrier dans les options de votre intégration Hydro-Québec Flex-D (DPC).
 
     ## Configuration
 
-
     ### Sélection du calendrier
 
-    Sélectionnez le calendrier que vous avez configuré dans l''intégration Hydro-Québec
-    pour recevoir les événements de pointe critique.
-
+    Sélectionnez le calendrier que vous avez configuré dans l'intégration Hydro-Québec pour recevoir les événements de pointe critique.
 
     ### Période de pré-chauffage
 
-    Définissez combien de temps avant le début de l''événement vous souhaitez commencer
-    le pré-chauffage de votre résidence (en minutes).
-
+    Définissez combien de temps avant le début de l'événement vous souhaitez commencer le pré-chauffage de votre résidence (en minutes).
 
     ### Actions
 
+    Définition des actions à effectuer dans Home-Assistant lors de chaque début et fin de périodes.
 
-    Définition des actions à effectuer dans Home-Assistant lors de chaque début et
-    fin de périodes.
+    **Important** : Pour éviter qu'une erreur dans une action empêche l'exécution des actions suivantes, il est recommandé d'utiliser des appels d'actions en parallèle. Exemple : au lieu d'une séquence simple, utilisez `parallel:` pour grouper vos actions.
+
+    **Workflows complexes** : Si vous avez besoin de logiques conditionnelles complexes ou de nombreuses étapes, il est recommandé d'utiliser ce blueprint pour déclencher des automatisations séparées plutôt que d'inclure toute la logique ici. Cela facilite la maintenance et le débogage.
 
 
-    Vous trouverez plus de détails sur les logiques applicables pour Flex-D
+    ### Métadonnées disponibles
 
-    dans la [documentation Hydro-Québec](https://www.hydroquebec.com/residentiel/espace-clients/tarifs/tarif-flex-d.html).
 
-    '
+    Les événements de calendrier incluent des métadonnées accessibles dans vos actions :
+
+    - trigger.calendar_event.summary : Titre (🔴 Pointe critique / ⚪ Pointe régulière)
+
+    - trigger.calendar_event.description : Contient Critique: Oui/Non, Tarif: DPC, etc.
+
+
+    ### Création manuelle d'événements
+
+    Si l'intégration ne crée pas automatiquement les événements (API indisponible, problème de configuration), vous pouvez créer manuellement des événements dans votre calendrier :
+
+    1. Créez un événement pour la période de pointe critique annoncée par Hydro-Québec dans le calendrier.
+    2. Titre: 🔴 Pointe critique
+    3. Description:
+    ```
+    Tarif: DPC
+    Critique: Oui
+    ```
+  
+
+    Vous trouverez plus de détails sur les logiques applicables pour Flex-D dans la [documentation Hydroqc](https://hydroqc.ca/fr/docs/tarification-dynamique/).
+
   domain: automation
   input:
     hydroqc_calendar:
@@ -47,36 +60,56 @@ blueprint:
         entity:
           domain: calendar
           multiple: false
-    preheat_minutes:
-      name: Minutes de pré-chauffage avant l'événement
-      description: Nombre de minutes avant le début de l'événement pour commencer le pré-chauffage (par exemple -120 = 2 heures avant)
-      default: -120
+    preheat_offset:
+      name: Délai de pré-chauffage
+      description: "Temps avant le début de l'événement pour commencer le pré-chauffage (format -HH:MM:SS, ex: -02:00:00 pour 2 heures avant, -01:30:00 pour 1h30 avant)"
+      default: "-02:00:00"
       selector:
-        number:
-          min: -360
-          max: 0
-          step: 15
-          unit_of_measurement: minutes
-          mode: slider
+        text:
+          type: text
+    critical_peak_offset:
+      name: Délai avant début pointe critique
+      description: "Temps avant le début officiel de la pointe pour déclencher les actions (permet aux appareils de se stabiliser avant la pointe). Format -HH:MM:SS, ex: -00:01:00 pour 1 minute avant"
+      default: "-00:01:00"
+      selector:
+        text:
+          type: text
+    
+    # ===== ACTIONS =====
     pre_heat_start_action:
       name: Action de pré-chauffage
       description: Actions à effectuer avant la période de pointe critique pour
         pré-chauffer votre résidence.
-      default: []
+      default:
+        - parallel:
+            - alias: Action 1
+              # Votre action ici
+            - alias: Action 2
+              # Votre action ici
       selector:
         action: {}
     critical_peak_start_action:
       name: Action début pointe critique
       description: Actions à effectuer au début de la période de pointe critique pour
         réduire votre consommation électrique.
-      default: []
+      default:
+        - parallel:
+            - alias: Action 1
+              # Votre action ici
+            - alias: Action 2
+              # Votre action ici
       selector:
         action: {}
     critical_peak_end_action:
       name: Action fin pointe critique
-      description: Actions à effectuer à la fin de la période de pointe critique pour
+      description: |
+        Actions à effectuer à la fin de la période de pointe critique pour
         rétablir votre consommation normale.
-      default: []
+        
+        **Délai aléatoire par défaut (30 sec - 5 min)** : Évite une surcharge du réseau électrique causée par le redémarrage simultané de milliers d'appareils à la fin de la pointe. Si vous avez plusieurs actions de reprise, ajoutez un délai aléatoire similaire entre chacune pour étaler la consommation.
+        - delay:
+            seconds: "{{ range(30, 300)|random|int }}"
+          alias: Délai aléatoire 30 sec - 5 minutes
       selector:
         action: {}
   source_url: https://github.com/hydroqc/hydroqc-ha/blob/main/blueprints/flex-d-calendar.yaml
@@ -85,27 +118,43 @@ trigger:
   - platform: calendar
     entity_id: !input hydroqc_calendar
     event: start
-    offset: !input preheat_minutes
+    offset: !input preheat_offset
     id: pre_heat_trigger
+  # Critical peak start: configurable offset before official peak start (default 1min before)
   - platform: calendar
     entity_id: !input hydroqc_calendar
     event: start
+    offset: !input critical_peak_offset
     id: peak_start_trigger
   - platform: calendar
     entity_id: !input hydroqc_calendar
     event: end
     id: peak_end_trigger
+# Add condition to filter only peak events (title contains "pointe") and DPC rate
+condition:
+  - condition: template
+    value_template: "{{ 'pointe' in trigger.calendar_event.summary | lower }}"
+  - condition: template
+    value_template: "{{ 'DPC' in trigger.calendar_event.location }}"
 action:
   - choose:
       - conditions:
           - condition: trigger
             id: pre_heat_trigger
+          - condition: template
+            value_template: "{{ 'Critique: Oui' in trigger.calendar_event.description }}"
         sequence: !input pre_heat_start_action
       - conditions:
           - condition: trigger
             id: peak_start_trigger
+          - condition: template
+            value_template: "{{ 'Critique: Oui' in trigger.calendar_event.description }}"
         sequence: !input critical_peak_start_action
       - conditions:
           - condition: trigger
             id: peak_end_trigger
+          - condition: template
+            value_template: "{{ 'Critique: Oui' in trigger.calendar_event.description }}"
         sequence: !input critical_peak_end_action
+    default:
+      

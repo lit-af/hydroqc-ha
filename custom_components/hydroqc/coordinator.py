@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import slugify
 
@@ -26,18 +27,22 @@ try:
 except AttributeError:
     HYDROQC_VERSION = "unknown"
 
+from . import calendar_manager
 from .const import (
     AUTH_MODE_OPENDATA,
     AUTH_MODE_PORTAL,
     CONF_ACCOUNT_ID,
     CONF_AUTH_MODE,
+    CONF_CALENDAR_ENTITY_ID,
     CONF_CONTRACT_ID,
     CONF_CONTRACT_NAME,
     CONF_CUSTOMER_ID,
+    CONF_INCLUDE_NON_CRITICAL_PEAKS,
     CONF_PREHEAT_DURATION,
     CONF_RATE,
     CONF_RATE_OPTION,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
 )
@@ -46,6 +51,10 @@ from .public_data_client import PublicDataClient
 from .statistics_manager import StatisticsManager
 
 _LOGGER = logging.getLogger(__name__)
+
+# Storage for calendar event UIDs (persists across restarts)
+STORAGE_VERSION = 1
+STORAGE_KEY_CALENDAR_UIDS = "hydroqc.calendar_uids"
 
 
 class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -82,6 +91,8 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._csv_import_task: asyncio.Task[None] | None = None
         # Track regular sync task (for recent data updates)
         self._regular_sync_task: asyncio.Task[None] | None = None
+        # Track calendar sync task (prevent concurrent syncs)
+        self._calendar_sync_task: asyncio.Task[None] | None = None
 
         # Track first refresh completion (set by __init__.py after setup)
         self._first_refresh_done: bool = False
@@ -89,6 +100,24 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Initialize helper modules (lazy initialization after contract is available)
         self._statistics_manager: StatisticsManager | None = None
         self._history_importer: ConsumptionHistoryImporter | None = None
+
+        # Calendar configuration (for DPC/DCPC rates)
+        self._calendar_entity_id = entry.options.get(
+            CONF_CALENDAR_ENTITY_ID, entry.data.get(CONF_CALENDAR_ENTITY_ID)
+        )
+        self._include_non_critical_peaks = entry.options.get(
+            CONF_INCLUDE_NON_CRITICAL_PEAKS,
+            entry.data.get(CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS),
+        )
+
+        # Track created calendar event UIDs (persisted across restarts)
+        self._created_event_uids: set[str] = set()
+        # Storage for persisting calendar event UIDs
+        self._calendar_uid_store: Store[dict[str, list[str]]] | None = None
+        if self._calendar_entity_id:
+            # Create unique storage key per contract to avoid conflicts
+            storage_key = f"{STORAGE_KEY_CALENDAR_UIDS}.{entry.entry_id}"
+            self._calendar_uid_store = Store(hass, STORAGE_VERSION, storage_key, encoder=None)
 
         # Initialize webuser if in portal mode
         if self._auth_mode == AUTH_MODE_PORTAL:
@@ -143,6 +172,24 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return f"{self._rate}{self._rate_option}"
 
     @property
+    def contract_name(self) -> str:
+        """Return the contract name for display purposes."""
+        return str(self.entry.data.get(CONF_CONTRACT_NAME, "Contract"))
+
+    @property
+    def contract_id(self) -> str:
+        """Return the contract ID.
+
+        For portal mode, returns the actual contract ID.
+        For opendata mode, generates a stable ID from contract name.
+        """
+        if self.is_portal_mode:
+            return str(self._contract_id)
+        # For opendata mode, generate stable ID from contract name
+        contract_name = self.contract_name
+        return f"opendata_{slugify(contract_name)}"
+
+    @property
     def is_consumption_history_syncing(self) -> bool:
         """Return True if CSV import is currently running."""
         if self._csv_import_task is None:
@@ -156,6 +203,44 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         return True
+
+    async def async_load_calendar_uids(self) -> None:
+        """Load persisted calendar event UIDs from storage."""
+        if not self._calendar_uid_store:
+            _LOGGER.debug("No calendar UID store configured")
+            return
+
+        try:
+            data = await self._calendar_uid_store.async_load()
+            if data and isinstance(data, dict):
+                uids = data.get("uids", [])
+                self._created_event_uids = set(uids)
+                _LOGGER.info(
+                    "Loaded %d persisted calendar event UIDs for %s: %s",
+                    len(self._created_event_uids),
+                    self.contract_name,
+                    list(self._created_event_uids)[:3] if self._created_event_uids else "[]",
+                )
+            else:
+                _LOGGER.info("No persisted calendar UIDs found for %s", self.contract_name)
+        except Exception as err:
+            _LOGGER.warning("Failed to load calendar UIDs from storage: %s", err)
+            self._created_event_uids = set()
+
+    async def async_save_calendar_uids(self) -> None:
+        """Save calendar event UIDs to persistent storage."""
+        if not self._calendar_uid_store:
+            return
+
+        try:
+            data = {"uids": list(self._created_event_uids)}
+            await self._calendar_uid_store.async_save(data)
+            _LOGGER.debug(
+                "Saved %d calendar event UIDs to storage",
+                len(self._created_event_uids),
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to save calendar UIDs to storage: %s", err)
 
     def _ensure_helper_modules(self) -> None:
         """Ensure helper modules are initialized (lazy initialization)."""
@@ -201,6 +286,14 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.debug("[OpenData] Public peak data fetched successfully")
             except Exception as err:
                 _LOGGER.warning("[OpenData] Failed to fetch public peak data: %s", err)
+
+        # Sync calendar events if configured and peak data available (for both modes)
+        # Only start sync if not already running (prevent duplicate event creation)
+        if self._calendar_entity_id and self.public_client.peak_handler:
+            if self._calendar_sync_task is None or self._calendar_sync_task.done():
+                self._calendar_sync_task = asyncio.create_task(self._async_sync_calendar_events())
+            else:
+                _LOGGER.debug("Calendar sync already in progress, skipping")
 
         # If in peak-only mode, we're done
         if self.is_opendata_mode:
@@ -626,3 +719,104 @@ class HydroQcDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
         # Schedule the next hourly update
         self._schedule_hourly_update()
+
+    async def _async_sync_calendar_events(self) -> None:
+        """Sync peak events to configured calendar entity.
+
+        Only syncs for DPC/DCPC rates when calendar is configured.
+        Validates calendar entity exists and auto-disables if removed.
+        """
+        if not self._calendar_entity_id:
+            _LOGGER.debug(
+                "Calendar sync disabled for %s: no calendar entity configured. "
+                "Configure via integration options to enable peak event calendar sync.",
+                self.contract_name,
+            )
+            return
+
+        # Only sync for rates that support calendar (DPC/DCPC)
+        if self.rate_with_option not in ["DPC", "DCPC"]:
+            _LOGGER.debug(
+                "Calendar sync not available for rate %s (only DPC/DCPC supported)",
+                self.rate_with_option,
+            )
+            return
+
+        # Check if calendar entity exists
+        calendar_state = self.hass.states.get(self._calendar_entity_id)
+        if not calendar_state:
+            _LOGGER.warning(
+                "Calendar entity %s not found, disabling calendar sync for %s",
+                self._calendar_entity_id,
+                self.contract_name,
+            )
+
+            # Update entry to remove calendar configuration (auto-disable)
+            new_data = dict(self.entry.data)
+            new_data.pop(CONF_CALENDAR_ENTITY_ID, None)
+            new_data.pop(CONF_INCLUDE_NON_CRITICAL_PEAKS, None)
+
+            self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+
+            # Create persistent notification with repair link
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "message": (
+                        f"Le calendrier {self._calendar_entity_id} n'existe plus. "
+                        f"La synchronisation des événements de pointe a été désactivée pour {self.contract_name}. "
+                        f"Vous pouvez reconfigurer le calendrier dans les options de l'intégration."
+                    ),
+                    "title": "Hydro-Québec - Calendrier introuvable",
+                    "notification_id": f"hydroqc_calendar_missing_{self.contract_id}",
+                },
+            )
+
+            # Clear calendar config to avoid repeated checks
+            self._calendar_entity_id = None
+            return
+
+        # Get peak events from public client
+        if not self.public_client.peak_handler or not self.public_client.peak_handler._events:
+            _LOGGER.debug("No peak events available for calendar sync")
+            return
+
+        peaks = list(self.public_client.peak_handler._events)
+
+        try:
+            _LOGGER.debug(
+                "Syncing %d peak events to calendar %s for %s",
+                len(peaks),
+                self._calendar_entity_id,
+                self.contract_name,
+            )
+
+            # Sync events using calendar manager
+            new_uids = await calendar_manager.async_sync_events(
+                self.hass,
+                self._calendar_entity_id,
+                peaks,
+                self._created_event_uids,
+                self.contract_id,
+                self.contract_name,
+                self.rate_with_option,
+                self._include_non_critical_peaks or False,
+            )
+
+            # Update stored UIDs and persist to storage
+            self._created_event_uids = new_uids
+            await self.async_save_calendar_uids()
+
+            _LOGGER.info(
+                "Calendar sync complete for %s: %d events tracked",
+                self.contract_name,
+                len(new_uids),
+            )
+
+        except Exception as err:
+            _LOGGER.warning(
+                "Failed to sync calendar events for %s: %s",
+                self.contract_name,
+                err,
+            )
