@@ -164,7 +164,7 @@ async def async_get_existing_event_uids(
         component = hass.data.get("calendar")
         if not component:
             _LOGGER.debug("Calendar component not loaded, skipping event check")
-            return existing_uids
+            return {}
 
         # Get the entity from the component
         calendar_entity = None
@@ -175,7 +175,7 @@ async def async_get_existing_event_uids(
 
         if not calendar_entity or not isinstance(calendar_entity, CalendarEntity):
             _LOGGER.debug("Calendar entity %s not found, assuming no existing events", calendar_id)
-            return existing_uids
+            return {}
 
         # Use the entity's get_events method
         events = await calendar_entity.async_get_events(hass, start_date, end_date)
@@ -194,7 +194,9 @@ async def async_get_existing_event_uids(
                         # Extract criticality (format: "Critique: Oui" or "Critique: Non")
                         is_critical = "Critique: Oui" in description
                         existing_events[uid] = is_critical
-                        _LOGGER.debug("Found existing event with UID: %s (critical=%s)", uid, is_critical)
+                        _LOGGER.debug(
+                            "Found existing event with UID: %s (critical=%s)", uid, is_critical
+                        )
 
         _LOGGER.info("Found %d existing hydroqc events in calendar", len(existing_events))
 
@@ -249,7 +251,9 @@ async def async_sync_events(
     if future_peaks:
         start_date = min(p.start_date for p in future_peaks)
         end_date = max(p.end_date for p in future_peaks)
-        existing_events_info = await async_get_existing_event_uids(hass, calendar_id, start_date, end_date)
+        existing_events_info = await async_get_existing_event_uids(
+            hass, calendar_id, start_date, end_date
+        )
         existing_uids = set(existing_events_info.keys())
         # Merge with stored UIDs to avoid recreating
         all_existing_uids = stored_uids | existing_uids
@@ -273,7 +277,7 @@ async def async_sync_events(
     new_uids = set(all_existing_uids)
     events_created = 0
     events_updated = 0
-    
+
     for peak in future_peaks:
         uid = generate_event_uid(contract_id, peak.start_date)
 
