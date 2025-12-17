@@ -259,12 +259,16 @@ class PeakHandler:
         - "anchor": During an anchor period before a non-critical peak (DCPC only)
         - "normal": Regular period (no peak/anchor/preheat active)
         """
-        # If no events, we're off season
-        if not self._events:
-            return "off_season"
-
         tz = zoneinfo.ZoneInfo("America/Toronto")
         now = datetime.datetime.now(tz)
+
+        # If we're not in the dec 1st. to mar 31st. period, we're off-season
+        if not ((now.month, now.day) >= (12, 1) or (now.month, now.day) <= (3, 31)):
+            return "off_season"
+
+        # In season but no events, state is normal
+        if not self._events:
+            return "normal"
 
         # Check if currently in a peak
         current = self.current_peak
