@@ -21,9 +21,7 @@ from ..const import (
     CONF_PREHEAT_DURATION,
     CONF_RATE,
     CONF_RATE_OPTION,
-    CONF_UPDATE_INTERVAL,
     DEFAULT_PREHEAT_DURATION,
-    DEFAULT_UPDATE_INTERVAL,
 )
 
 
@@ -33,6 +31,11 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
+            # Filter out empty calendar entity ID (calendar is optional)
+            if CONF_CALENDAR_ENTITY_ID in user_input:
+                calendar_id = user_input.get(CONF_CALENDAR_ENTITY_ID, "").strip()
+                if not calendar_id:
+                    user_input.pop(CONF_CALENDAR_ENTITY_ID, None)
             return self.async_create_entry(title="", data=user_input)
 
         # Check if rate supports calendar configuration
@@ -44,19 +47,6 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
 
         # Build schema based on rate capabilities
         schema_dict: dict[Any, Any] = {
-            vol.Optional(
-                CONF_UPDATE_INTERVAL,
-                default=self.config_entry.options.get(
-                    CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
-                ),
-            ): NumberSelector(
-                NumberSelectorConfig(
-                    min=30,
-                    max=600,
-                    mode=NumberSelectorMode.BOX,
-                    unit_of_measurement="seconds",
-                )
-            ),
             vol.Optional(
                 CONF_PREHEAT_DURATION,
                 default=self.config_entry.options.get(
@@ -91,9 +81,16 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
                 CONF_CALENDAR_ENTITY_ID,
                 self.config_entry.data.get(CONF_CALENDAR_ENTITY_ID, ""),
             )
-            schema_dict[vol.Optional(CONF_CALENDAR_ENTITY_ID, default=current_calendar)] = (
-                EntitySelector(EntitySelectorConfig(domain="calendar"))
-            )
+            # Only set default if calendar is actually configured (not empty)
+            # This prevents EntitySelector validation errors with empty strings
+            if current_calendar:
+                schema_dict[vol.Optional(CONF_CALENDAR_ENTITY_ID, default=current_calendar)] = (
+                    EntitySelector(EntitySelectorConfig(domain="calendar"))
+                )
+            else:
+                schema_dict[vol.Optional(CONF_CALENDAR_ENTITY_ID)] = EntitySelector(
+                    EntitySelectorConfig(domain="calendar")
+                )
 
         return self.async_show_form(
             step_id="init",
