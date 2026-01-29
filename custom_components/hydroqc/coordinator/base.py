@@ -12,7 +12,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import (
-    async_track_point_in_time,
     async_track_time_change,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -24,6 +23,8 @@ from hydroqc.contract import ContractDCPC, ContractDPC, ContractDT
 from hydroqc.contract.common import Contract
 from hydroqc.customer import Customer
 from hydroqc.webuser import WebUser
+
+from ..utils import is_winter_season
 
 try:
     HYDROQC_VERSION = hydroqc.__version__  # type: ignore[attr-defined]
@@ -94,8 +95,15 @@ class HydroQcDataCoordinator(
         self._last_portal_update: datetime.datetime | None = None
         self._last_consumption_sync: datetime.datetime | None = None
 
-        # Track critical peak event count for calendar sync optimization
-        self._last_critical_events_count: int = 0
+        # Track critical peak events signature for calendar sync optimization
+        # Using signature instead of count to detect additions, removals, and time changes
+        self._last_critical_events_signature: str = ""
+
+        # Calculate random minute and second offsets based on integration start time
+        # This distributes API calls across users to avoid thundering herd
+        _now = datetime.datetime.now()
+        self._schedule_offset_minutes = _now.minute % 15
+        self._schedule_offset_seconds = _now.second
 
         # Track portal offline status to avoid log spam
         self._portal_last_offline_log: datetime.datetime | None = None
@@ -131,27 +139,31 @@ class HydroQcDataCoordinator(
         self._init_calendar_sync()
 
         # Set up scheduled update triggers
-        # OpenData: Every 5 minutes during active window (11-18h), hourly otherwise
+        # OpenData: Every 15 minutes during active window (10:30-15:00), hourly otherwise
+        # Use offset based on start time to distribute API calls across users
+        opendata_minutes = [(self._schedule_offset_minutes + i * 15) % 60 for i in range(4)]
         async_track_time_change(
             hass,
             self._async_scheduled_opendata_update,
-            minute=list(range(0, 60, 5)),  # Every 5 minutes
-            second=0,
+            minute=opendata_minutes,  # Every 15 minutes with offset
+            second=self._schedule_offset_seconds,
         )
 
         # Portal: Hourly during active window (0-8h), every 3 hours otherwise
+        # Use offset based on start time to distribute API calls across users
         async_track_time_change(
             hass,
             self._async_scheduled_portal_update,
-            minute=0,  # Top of hour
-            second=0,
+            minute=self._schedule_offset_minutes,  # Random minute within the hour
+            second=self._schedule_offset_seconds,
         )
 
-        # Peak events: Hourly update at XX:00:00 sharp
+        # Calendar: Every 15 minutes to catch manual event changes
+        # Independent of OpenData - only refreshes calendar-based sensor data
         async_track_time_change(
             hass,
-            self._async_hourly_peak_update,
-            minute=0,
+            self._async_scheduled_calendar_refresh,
+            minute=[0, 15, 30, 45],
             second=0,
         )
 
@@ -225,29 +237,67 @@ class HydroQcDataCoordinator(
         else:
             _LOGGER.debug("[Portal] Scheduled update skipped (not needed)")
 
-    async def _async_hourly_peak_update(self, now: datetime.datetime) -> None:
-        """Force coordinator refresh at top of each hour for peak accuracy.
+    async def _async_scheduled_calendar_refresh(self, _now: datetime.datetime) -> None:
+        """Scheduled callback for Calendar data refresh.
 
-        Called by async_track_time_change at XX:00:00 exactly.
-        Only runs during winter season for peak event sensors.
+        Runs every 15 minutes to catch manual calendar event changes.
+        Independent of OpenData/Portal - only refreshes calendar-based sensor data.
+        Does not trigger a full coordinator refresh.
         """
-        if not self._is_winter_season():
-            return
+        if not self.calendar_peak_handler:
+            return  # No calendar configured
 
-        _LOGGER.debug("[OpenData] Hourly peak trigger at %02d:00:00 - forcing update", now.hour)
-        await self.async_request_refresh()
+        if not is_winter_season():
+            return  # Off-season, skip calendar refresh
 
-    def _is_winter_season(self) -> bool:
-        """Check if currently in winter season (Dec 1 - Mar 31)."""
-        now = datetime.datetime.now(ZoneInfo("America/Toronto"))
-        month = now.month
-        # Winter season: December (12), January (1), February (2), March (3)
-        return month in (12, 1, 2, 3)
+        _LOGGER.debug("[Calendar] Scheduled 15-min calendar refresh")
+
+        # Wait for any pending calendar sync to complete first
+        if self._calendar_sync_task and not self._calendar_sync_task.done():
+            try:
+                _LOGGER.debug("[Calendar] Waiting for pending sync task to complete")
+                await asyncio.wait_for(self._calendar_sync_task, timeout=30.0)
+            except TimeoutError:
+                _LOGGER.warning("[Calendar] Calendar sync task timed out, proceeding anyway")
+            except Exception as err:
+                _LOGGER.warning("[Calendar] Calendar sync task failed: %s, proceeding anyway", err)
+
+        # Refresh calendar-based sensor data directly (no full coordinator refresh)
+        await self.async_load_calendar_peak_events()
+
+        # Notify listeners of updated data without fetching all data sources
+        self.async_set_updated_data(self.data)
+
+    def _get_critical_events_signature(self) -> str:
+        """Get signature of critical events for change detection.
+
+        Returns a string hash of all critical events sorted by start time.
+        This detects:
+        - New events added (any position)
+        - Events removed
+        - Event times modified
+        - Event replacements (same count, different events)
+        """
+        if not self.public_client or not self.public_client.peak_handler:
+            return ""
+
+        events = sorted(
+            (e for e in self.public_client.peak_handler._events if e.is_critical),
+            key=lambda e: e.start_date,
+        )
+        return "|".join(f"{e.start_date.isoformat()}_{e.end_date.isoformat()}" for e in events)
 
     def _is_opendata_active_window(self) -> bool:
-        """Check if currently in OpenData active hours (11:00-18:00 EST)."""
+        """Check if currently in OpenData active hours (10:30-15:00 EST).
+
+        This is the window when Hydro-Québec typically announces critical peaks.
+        """
         now = datetime.datetime.now(ZoneInfo("America/Toronto"))
-        return 11 <= now.hour < 18
+        # Active window: 10:30 to 15:00
+        # At 10:30 or later, but before 15:00
+        if now.hour == 10:
+            return now.minute >= 30  # Only from 10:30
+        return 11 <= now.hour < 15
 
     def _is_portal_active_window(self) -> bool:
         """Check if currently in Portal active hours (00:00-08:00 EST)."""
@@ -257,7 +307,7 @@ class HydroQcDataCoordinator(
     def _should_update_opendata(self) -> bool:
         """Determine if OpenData should be updated based on time elapsed and window."""
         # Skip if off-season
-        if not self._is_winter_season():
+        if not is_winter_season():
             return False
 
         # First update always runs
@@ -268,10 +318,10 @@ class HydroQcDataCoordinator(
         now = datetime.datetime.now(ZoneInfo("America/Toronto"))
         elapsed = (now - self._last_opendata_update).total_seconds()
 
-        # Active window: 5 minutes, Inactive: 60 minutes
+        # Active window: 15 minutes, Inactive: 60 minutes
         # Note: Hourly updates are handled by async_track_time_change trigger
         if self._is_opendata_active_window():
-            return elapsed >= 300  # 5 minutes
+            return elapsed >= 900  # 15 minutes
         return elapsed >= 3600  # 60 minutes
 
     def _should_update_portal(self) -> bool:
@@ -306,7 +356,7 @@ class HydroQcDataCoordinator(
         data_fetched = False  # Track if any new data was actually fetched
 
         # OpenData: Fetch public peak data
-        if self._is_winter_season():
+        if is_winter_season():
             try:
                 await self.public_client.fetch_peak_data()
                 self._last_opendata_update = datetime.datetime.now(ZoneInfo("America/Toronto"))
@@ -324,26 +374,28 @@ class HydroQcDataCoordinator(
         else:
             _LOGGER.debug("[OpenData] Skipped (off-season)")
 
-        # Calendar sync: Only run if critical peak count changed
-        # Non-critical peaks are not synced to calendar
+        # Calendar sync: Only run if critical peak events changed
+        # Uses signature to detect additions, removals, and time changes
         if self._calendar_entity_id and self.public_client.peak_handler:
-            # Only track critical peak count
-            current_critical_count = sum(
-                1 for e in self.public_client.peak_handler._events if e.is_critical
-            )
+            current_signature = self._get_critical_events_signature()
 
-            if current_critical_count != self._last_critical_events_count:
+            if current_signature != self._last_critical_events_signature:
                 if self._calendar_sync_task is None or self._calendar_sync_task.done():
                     self._calendar_sync_task = asyncio.create_task(
                         self._async_sync_calendar_events()
                     )
-                    self._last_critical_events_count = current_critical_count
+                    self._last_critical_events_signature = current_signature
                     _LOGGER.debug(
-                        "Calendar sync triggered (critical peaks: %d)",
-                        current_critical_count,
+                        "Calendar sync triggered (signature changed: %s)",
+                        current_signature[:50] if current_signature else "empty",
                     )
                 else:
                     _LOGGER.debug("Calendar sync already in progress, skipping")
+
+        # Load peak events from calendar for sensors (calendar is source of truth)
+        # This runs on every update to refresh sensor data from calendar
+        if self.calendar_peak_handler:
+            await self.async_load_calendar_peak_events()
 
         # If in OpenData-only mode, return early
         if self.is_opendata_mode:
@@ -498,24 +550,3 @@ class HydroQcDataCoordinator(
         if self._webuser:
             await self._webuser.close_session()
         await self.public_client.close_session()
-
-    def _schedule_hourly_update(self) -> None:
-        """Schedule the next update at the top of the hour for peak sensors."""
-        now = datetime.datetime.now()
-        # Schedule for the next hour
-        next_hour = (now + datetime.timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-
-        _LOGGER.debug("Scheduling next peak update at %s", next_hour)
-
-        async_track_point_in_time(
-            self.hass,
-            self._async_hourly_update,
-            next_hour,
-        )
-
-    async def _async_hourly_update(self, _now: datetime.datetime) -> None:
-        """Perform hourly update for peak sensors."""
-        _LOGGER.debug("Triggering hourly peak sensor update")
-        await self.async_request_refresh()
-        # Schedule the next hourly update
-        self._schedule_hourly_update()

@@ -10,6 +10,79 @@
 
 ---
 
+## [0.7.0-beta.2] - 2026-01-29
+
+### Ajouté
+
+- `utils.py` : Nouveau module utilitaire avec fonctions de saison d'hiver (#102)
+  - `is_winter_season(dt)` : Vérifie si une date est en saison hivernale (1er déc - 31 mars)
+  - `get_winter_season_bounds(date)` : Retourne les bornes de la saison d'hiver
+
+### Modifié
+
+- Refactorisation : Extraction de `is_winter_season` vers `utils.py` (suggestion de revue @lit-af)
+- Refactorisation : Utilisation de `is_winter_season()` dans `calendar_sync.py` et `public_data/peak_handler.py`
+- Renommage du capteur "Économie vs Tarif D" → "Différence Flex D vs Tarif D" (#88)
+  - Clarifie que les valeurs négatives = économies (coût Flex D - coût Tarif D)
+  - Mis à jour dans les trois langues (EN/FR/ES)
+
+### Corrigé
+
+- Correction du formatage dans `button.py` et `sensor.py`
+
+---
+
+## [0.7.0-beta.1] - 2026-01-29
+
+### 🎯 Points saillants de cette version
+
+Cette version introduit une architecture où le calendrier devient la source de vérité pour les capteurs de pointe, avec trois ordonnanceurs indépendants et une protection anti-thundering herd.
+
+#### 📅 Calendrier comme source de vérité
+- **Données persistantes** : Les événements de pointe survivent aux redémarrages de Home Assistant
+- **CalendarPeakHandler** : Nouveau gestionnaire qui lit les événements depuis le calendrier HA
+- **Synchronisation bidirectionnelle** : OpenData → Calendrier → Capteurs
+- **Détection par signature** : Détecte les ajouts, suppressions et modifications d'événements
+
+#### ⏰ Trois ordonnanceurs indépendants
+- **OpenData** : Toutes les 15 minutes avec décalage aléatoire (10h30-15h00 fenêtre active)
+- **Portail** : Aux heures avec décalage aléatoire
+- **Calendrier** : Toutes les 15 minutes pour capter les modifications manuelles
+
+#### 🔄 Anti-thundering herd
+- **Décalage aléatoire** : Minutes (0-14) et secondes (0-59) calculés au démarrage
+- **Distribution des appels** : Évite que tous les utilisateurs appellent l'API en même temps
+- **Appliqué à OpenData ET Portail** : Les deux ordonnanceurs utilisent le même décalage
+
+#### 🔘 Bouton de rafraîchissement manuel
+- **Nouveau bouton** : Permet de forcer un rafraîchissement des données de pointe
+- **Portée limitée** : Rafraîchit uniquement OpenData et calendrier (pas le portail)
+
+### Ajouté
+
+- `CalendarPeakHandler` : Gestionnaire de pointe basé sur le calendrier HA (#102)
+- `CalendarPeakEvent` : Modèle d'événement simplifié parsé depuis le calendrier
+- Bouton de rafraîchissement manuel pour les tarifs DPC/DCPC (#104)
+- Détection par signature pour la synchronisation du calendrier
+- Décalage aléatoire minute/seconde pour l'ordonnanceur OpenData
+- Documentation mise à jour dans `copilot-instructions.md`
+
+### Modifié
+
+- Fenêtre active OpenData changée de 11h00-18h00 à 10h30-15h00 EST
+- Intervalle OpenData changé de 5 minutes à 15 minutes
+- Ordonnanceur Portail avec décalage aléatoire (plus au top de l'heure)
+- Les capteurs de pointe lisent maintenant depuis `CalendarPeakHandler` au lieu de l'API directement
+- Trois ordonnanceurs indépendants au lieu d'un seul
+
+### Corrigé
+
+- Correction du nom de méthode du bouton (`async_fetch_peaks()` → `fetch_peak_data()`)
+- Correction de la restauration des capteurs timestamp (parsing des chaînes ISO)
+- Corrections de linting et erreurs de typage
+
+---
+
 ## [0.6.0] - 2025-01-04
 
 **Rafraichissez vos Blueprint**
