@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
-from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.calendar import CalendarEntity
@@ -13,7 +13,14 @@ from homeassistant.components.calendar import CalendarEntity
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-    from .public_data_client import PeakEvent
+
+class PeakEventProtocol(Protocol):
+    """Protocol for peak event objects used in calendar creation."""
+
+    start_date: datetime.datetime
+    end_date: datetime.datetime
+    is_critical: bool
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +42,7 @@ DESCRIPTION_TEMPLATE = (
 EVENT_CREATION_DELAY = 0.1
 
 
-def generate_event_uid(contract_id: str, peak_start: datetime) -> str:
+def generate_event_uid(contract_id: str, peak_start: datetime.datetime) -> str:
     """Generate a stable UID for a peak event.
 
     Args:
@@ -51,7 +58,7 @@ def generate_event_uid(contract_id: str, peak_start: datetime) -> str:
 async def async_create_peak_event(
     hass: HomeAssistant,
     calendar_id: str,
-    peak_event: PeakEvent,
+    peak_event: PeakEventProtocol,
     contract_id: str,
     contract_name: str,
     rate: str,
@@ -61,7 +68,7 @@ async def async_create_peak_event(
     Args:
         hass: Home Assistant instance
         calendar_id: Entity ID of the target calendar
-        peak_event: Peak event data from PeakHandler
+        peak_event: Peak event data (must have start_date, end_date, is_critical)
         contract_id: Contract identifier for UID generation
         contract_name: Human-readable contract name for event title
         rate: Rate code (DPC or DCPC)
@@ -83,7 +90,7 @@ async def async_create_peak_event(
     end_str = peak_event.end_date.strftime("%H:%M")
     # Use local timezone (America/Toronto) for creation timestamp
     local_tz = ZoneInfo("America/Toronto")
-    created_at = datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    created_at = datetime.datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
     critical_str = "Oui" if peak_event.is_critical else "Non"
 
     description = DESCRIPTION_TEMPLATE.format(
@@ -138,8 +145,8 @@ async def async_create_peak_event(
 async def async_get_existing_event_uids(
     hass: HomeAssistant,
     calendar_id: str,
-    start_date: datetime,
-    end_date: datetime,
+    start_date: datetime.datetime,
+    end_date: datetime.datetime,
 ) -> dict[str, bool]:
     """Get UIDs and criticality of existing calendar events by checking their descriptions.
 
@@ -204,7 +211,7 @@ async def async_get_existing_event_uids(
 async def async_sync_events(
     hass: HomeAssistant,
     calendar_id: str,
-    peaks: list[PeakEvent],
+    peaks: list[PeakEventProtocol],
     stored_uids: set[str],
     contract_id: str,
     contract_name: str,
@@ -217,7 +224,7 @@ async def async_sync_events(
     Args:
         hass: Home Assistant instance
         calendar_id: Entity ID of the target calendar
-        peaks: List of peak events from PeakHandler
+        peaks: List of peak events (must have start_date, end_date, is_critical)
         stored_uids: Set of previously created event UIDs (for deduplication)
         contract_id: Contract identifier for UID generation
         contract_name: Human-readable contract name for event titles
@@ -233,7 +240,7 @@ async def async_sync_events(
     critical_peaks = [p for p in peaks if p.is_critical]
 
     # Filter to future peaks only (skip past events)
-    now = datetime.now(peaks[0].start_date.tzinfo if peaks else None)
+    now = datetime.datetime.now(peaks[0].start_date.tzinfo if peaks else None)
     future_peaks = [p for p in critical_peaks if p.end_date > now]
 
     if not future_peaks:
