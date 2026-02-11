@@ -6,23 +6,21 @@ import asyncio
 import contextlib
 import datetime
 import logging
-from collections.abc import Callable
+import zoneinfo
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-import pytz  # type: ignore[import-untyped]
-from homeassistant.components.recorder import get_instance, statistics  # type: ignore[attr-defined]
+from homeassistant.components.recorder import get_instance, statistics
 from homeassistant.core import HomeAssistant
-from pytz import timezone as pytz_timezone
-
-from hydroqc.contract.common import Contract
 
 if TYPE_CHECKING:
+    from hydroqc.contract.common import Contract
+
     from .statistics_manager import StatisticsManager
 
 _LOGGER = logging.getLogger(__name__)
-
 # Create timezone once at module level to avoid blocking I/O in event loop
-_TIMEZONE_TORONTO = pytz_timezone("America/Toronto")
+_TIMEZONE_TORONTO = zoneinfo.ZoneInfo("America/Toronto")
 
 
 class ConsumptionHistoryImporter:
@@ -51,7 +49,7 @@ class ConsumptionHistoryImporter:
         self._get_statistic_id = get_statistic_id_func
         self._statistics_manager = statistics_manager
 
-    async def import_csv_history(self, days_back: int) -> None:  # noqa: PLR0912, PLR0915
+    async def import_csv_history(self, days_back: int) -> None:
         """Import historical consumption data from CSV using iterative approach.
 
         Process:
@@ -128,19 +126,16 @@ class ConsumptionHistoryImporter:
 
                     if len(csv_data) <= 1:  # Only header or empty
                         _LOGGER.warning(
-                            "[PORTAL RESPONSE] Iteration %d: No data returned (requested from %s), "
-                            "advancing start date by 30 days",
+                            "[PORTAL RESPONSE] Iteration %d: No data (from %s), advancing 30 days",
                             iteration,
                             current_start_date,
                         )
                         # Increment start date by 30 days and try again
-                        current_start_date = current_start_date + datetime.timedelta(days=30)
+                        current_start_date += datetime.timedelta(days=30)
 
                         # Safety check: don't go past yesterday
                         if current_start_date > yesterday:
-                            _LOGGER.warning(
-                                "[PORTAL RESPONSE] No data available in entire date range, giving up"
-                            )
+                            _LOGGER.warning("[PORTAL RESPONSE] No data in range, giving up")
                             break
 
                         # Continue to next iteration
@@ -160,7 +155,7 @@ class ConsumptionHistoryImporter:
                     )
 
                     _LOGGER.info(
-                        "[PORTAL RESPONSE] Iteration %d: Received %d data rows (first: %s, last: %s)",
+                        "[PORTAL RESPONSE] Iteration %d: Got %d rows (first: %s, last: %s)",
                         iteration,
                         data_rows,
                         first_date_str,
@@ -175,7 +170,10 @@ class ConsumptionHistoryImporter:
                         ", ".join(consumption_types),
                     )
 
-                    stats_by_type = self._parse_csv_data(csv_data, consumption_types)  # type: ignore[arg-type]
+                    stats_by_type = self._parse_csv_data(
+                        csv_data,
+                        consumption_types,
+                    )
 
                     _LOGGER.debug(
                         "[RECORDER IMPORT] Iteration %d: Importing to Home Assistant recorder",
@@ -263,7 +261,7 @@ class ConsumptionHistoryImporter:
             _LOGGER.error("Error importing CSV consumption history: %s", err, exc_info=True)
 
     def _parse_csv_data(
-        self, csv_data: list[list[Any]], consumption_types: list[str]
+        self, csv_data: list[Sequence[Any]], consumption_types: list[str]
     ) -> dict[str, list[dict[str, Any]]]:
         """Parse CSV data and build statistics per consumption type.
 
@@ -307,35 +305,12 @@ class ConsumptionHistoryImporter:
                     rows_skipped_invalid_format += 1
                     continue
 
-                # Use pytz.localize() to properly handle DST transitions
-                try:
-                    hour_datetime_tz = tz.localize(naive_dt)
-                except pytz.exceptions.AmbiguousTimeError:
-                    # During fall DST: 1 AM hour repeats - use the second occurrence (DST=False)
-                    hour_datetime_tz = tz.localize(naive_dt, is_dst=False)
-                    _LOGGER.debug(
-                        "CSV row %d: Handling ambiguous DST time: %s (using is_dst=False)",
-                        rows_processed,
-                        datetime_str,
-                    )
-                except pytz.exceptions.NonExistentTimeError:
-                    # During spring DST: 2 AM hour doesn't exist - skip it
-                    _LOGGER.debug(
-                        "CSV row %d: Skipping non-existent DST time: %s",
-                        rows_processed,
-                        datetime_str,
-                    )
-                    rows_skipped_dst += 1
-                    continue
-                except Exception as e:
-                    _LOGGER.warning(
-                        "CSV row %d: Error localizing datetime %s: %s",
-                        rows_processed,
-                        datetime_str,
-                        e,
-                    )
-                    rows_skipped_invalid_format += 1
-                    continue
+                # Attach timezone information.
+                # zoneinfo handles DST transitions gracefully. For ambiguous times during a
+                # fall-back transition, it defaults to the first occurrence (fold=0).
+                # For non-existent times during a spring-forward transition, it adjusts
+                # the time, which is the desired behavior for cumulative statistics.
+                hour_datetime_tz = naive_dt.replace(tzinfo=tz)
 
                 # Log every 100th hour being processed
                 if rows_added % 100 == 0:
@@ -367,7 +342,7 @@ class ConsumptionHistoryImporter:
     def _add_consumption_stats(
         self,
         stats_by_type: dict[str, list[dict[str, Any]]],
-        row: list[Any],
+        row: Sequence[Any],
         hour_datetime_tz: datetime.datetime,
     ) -> None:
         """Add consumption statistics for a single hour.
@@ -411,6 +386,15 @@ class ConsumptionHistoryImporter:
                 )
                 return
 
+            if reg_kwh < 0 or haut_kwh < 0:
+                _LOGGER.warning(
+                    "Skipping hour %s: negative consumption value (reg=%s, haut=%s)",
+                    hour_datetime_tz,
+                    reg_kwh,
+                    haut_kwh,
+                )
+                return
+
             total_kwh = reg_kwh + haut_kwh
 
             stats_by_type["reg"].append(
@@ -436,7 +420,7 @@ class ConsumptionHistoryImporter:
             # Handle French decimal format (comma separator) and N.D. (non-disponible)
             total_kwh_value = safe_float_convert(row[2]) if len(row) > 2 else None
 
-            # Skip this hour if data is not available
+            # Skip this hour if data is not available or negative
             if total_kwh_value is None:
                 _LOGGER.debug(
                     "Skipping hour %s: data not available (total=%s)",
@@ -444,6 +428,15 @@ class ConsumptionHistoryImporter:
                     row[2] if len(row) > 2 else "missing",
                 )
                 return
+
+            if total_kwh_value < 0:
+                _LOGGER.warning(
+                    "Skipping hour %s: negative consumption value (total=%s)",
+                    hour_datetime_tz,
+                    total_kwh_value,
+                )
+                return
+
             stats_by_type["total"].append(
                 {
                     "start": hour_datetime_tz,
@@ -457,13 +450,24 @@ class ConsumptionHistoryImporter:
         start_date: datetime.date,
         consumption_types: list[str],
     ) -> None:
-        """Import parsed statistics into Home Assistant recorder.
+        """Import parsed statistics into Home Assistant recorder with batching.
+
+        Uses batching and throttling to avoid overwhelming slower systems:
+        - Processes 168 hours (7 days) per batch
+        - 0.5s delay between batches
+        - 1s delay between consumption types
 
         Args:
             stats_by_type: Dictionary mapping consumption type to statistics
             start_date: Start date of import period
             consumption_types: List of consumption types to import
         """
+        # Batch size: 168 hours = 7 days worth of hourly data
+        # Good balance between speed and reliability on slower systems
+        BATCH_SIZE = 168
+        DELAY_BETWEEN_BATCHES = 0.5  # seconds
+        DELAY_BETWEEN_TYPES = 1.0  # seconds
+
         for consumption_type in consumption_types:
             stats_list = stats_by_type[consumption_type]
 
@@ -505,7 +509,9 @@ class ConsumptionHistoryImporter:
                 statistic_id,
                 consumption_type,
             )
-            yesterday = start_date - datetime.timedelta(days=1)
+            # Base the continuity on the first actual data point we have
+            first_stat_date = stats_list[0]["start"].date()
+            yesterday = first_stat_date - datetime.timedelta(days=1)
             base_sum = await self._statistics_manager.get_base_sum(consumption_type, yesterday)
 
             # Add cumulative sums
@@ -514,19 +520,242 @@ class ConsumptionHistoryImporter:
                 cumulative_sum += stat["state"]
                 stat["sum"] = round(cumulative_sum, 2)
 
-            # Import to recorder
+            # Import to recorder in batches to avoid overwhelming slower systems
             metadata = self._statistics_manager.build_statistics_metadata(consumption_type)
+            total_batches = (len(stats_list) + BATCH_SIZE - 1) // BATCH_SIZE
 
-            await get_instance(self.hass).async_add_executor_job(
-                statistics.async_add_external_statistics,
-                self.hass,
-                metadata,
-                stats_list,
-            )
+            for batch_num in range(total_batches):
+                start_idx = batch_num * BATCH_SIZE
+                end_idx = min(start_idx + BATCH_SIZE, len(stats_list))
+                batch = stats_list[start_idx:end_idx]
+
+                _LOGGER.info(
+                    "[RECORDER IMPORT] Type '%s': Writing batch %d/%d (%d hours, %s to %s)",
+                    consumption_type,
+                    batch_num + 1,
+                    total_batches,
+                    len(batch),
+                    batch[0]["start"].date() if batch else "unknown",
+                    batch[-1]["start"].date() if batch else "unknown",
+                )
+
+                await get_instance(self.hass).async_add_executor_job(
+                    statistics.async_add_external_statistics,
+                    self.hass,
+                    metadata,
+                    batch,
+                )
+
+                # Wait for recorder to commit the transaction before verification
+                # The recorder processes its queue asynchronously, so we need to give it
+                # time to write and commit the data before we can verify it
+                await asyncio.sleep(1.0)
+
+                # Verify batch was written correctly with non-decreasing sums
+                await self._verify_batch_integrity(
+                    statistic_id, batch, batch_num + 1, total_batches
+                )
+
+                # Throttle between batches to give recorder time to process
+                if batch_num < total_batches - 1:  # Don't delay after last batch
+                    await asyncio.sleep(DELAY_BETWEEN_BATCHES)
 
             _LOGGER.info(
-                "Imported %d CSV statistics for %s (sum: %.2f kWh)",
+                "Imported %d CSV statistics for %s in %d batch(es) (sum: %.2f kWh)",
                 len(stats_list),
                 consumption_type,
+                total_batches,
                 cumulative_sum,
             )
+
+            # Delay between consumption types to allow DB commits
+            if consumption_type != consumption_types[-1]:  # Don't delay after last type
+                await asyncio.sleep(DELAY_BETWEEN_TYPES)
+
+    def _has_dst_transition(self, batch: list[dict[str, Any]]) -> bool:
+        """Check if the batch contains a DST transition.
+
+        Detects both spring forward (gap) and fall back (repeated hour) transitions
+        by checking if consecutive hours show unusual time differences.
+
+        Args:
+            batch: List of statistics records with 'start' datetime
+
+        Returns:
+            True if DST transition detected, False otherwise
+        """
+        if len(batch) < 2:
+            return False
+
+        for i in range(len(batch) - 1):
+            current_time = batch[i]["start"]
+            next_time = batch[i + 1]["start"]
+
+            # Normal hourly difference is 1 hour (3600 seconds)
+            time_diff = (next_time - current_time).total_seconds()
+
+            # Spring forward: 2-hour jump (7200s) when we skip an hour
+            # Fall back: 0-hour jump (0s) when we repeat an hour
+            # Allow small tolerance for edge cases
+            if time_diff <= 0 or time_diff >= 7200:
+                return True
+
+        return False
+
+    async def _verify_batch_integrity(
+        self,
+        statistic_id: str,
+        batch: list[dict[str, Any]],
+        batch_num: int,
+        total_batches: int,
+    ) -> None:
+        """Verify that batch was written correctly with non-decreasing sums.
+
+        Includes retry logic in case recorder hasn't committed yet.
+
+        Args:
+            statistic_id: Statistic ID to query
+            batch: Batch that was just written
+            batch_num: Current batch number (1-indexed)
+            total_batches: Total number of batches
+        """
+        if not batch:
+            return
+
+        # Get the time range of the batch we just wrote
+        batch_start_time = batch[0]["start"]
+        batch_end_time = batch[-1]["start"]
+
+        # Query what was actually written to the database
+        # Retry up to 3 times in case recorder is still committing
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                written_stats = await get_instance(self.hass).async_add_executor_job(
+                    statistics.statistics_during_period,
+                    self.hass,
+                    batch_start_time,
+                    batch_end_time + datetime.timedelta(hours=1),  # Include end hour
+                    {statistic_id},
+                    "hour",
+                    None,
+                    {"sum", "state"},
+                )
+
+                if not written_stats or statistic_id not in written_stats:
+                    if attempt < max_retries - 1:
+                        _LOGGER.debug(
+                            "[VERIFY] Batch %d/%d: No data found (attempt %d/%d), retrying...",
+                            batch_num,
+                            total_batches,
+                            attempt + 1,
+                            max_retries,
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    _LOGGER.warning(
+                        "[VERIFY] Batch %d/%d: No statistics found in database after %d attempts",
+                        batch_num,
+                        total_batches,
+                        max_retries,
+                    )
+                    return
+
+                db_stats = written_stats[statistic_id]
+
+                # If we got some data but not all, retry
+                if len(db_stats) < len(batch):
+                    if attempt < max_retries - 1:
+                        _LOGGER.debug(
+                            "[VERIFY] Batch %d/%d: Expected %d records, found %d (attempt %d/%d), retrying...",
+                            batch_num,
+                            total_batches,
+                            len(batch),
+                            len(db_stats),
+                            attempt + 1,
+                            max_retries,
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+
+                    # Check if this is a DST transition day by examining the batch dates
+                    diff = len(batch) - len(db_stats)
+                    is_dst_transition = self._has_dst_transition(batch)
+
+                    if is_dst_transition and diff in (1, -1):
+                        _LOGGER.debug(
+                            "[VERIFY] Batch %d/%d: Expected %d records, found %d "
+                            "(DST transition detected - %s)",
+                            batch_num,
+                            total_batches,
+                            len(batch),
+                            len(db_stats),
+                            "spring forward" if diff == 1 else "fall back",
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "[VERIFY] Batch %d/%d: Expected %d records, found %d after %d attempts",
+                            batch_num,
+                            total_batches,
+                            len(batch),
+                            len(db_stats),
+                            max_retries,
+                        )
+
+                # Check for non-decreasing sums
+                prev_sum = None
+                corruption_detected = False
+
+                for stat in db_stats:
+                    current_sum = stat.get("sum")
+                    if current_sum is None:
+                        continue
+
+                    if prev_sum is not None and current_sum < prev_sum:
+                        stat_time = datetime.datetime.fromtimestamp(stat["start"], tz=datetime.UTC)
+                        _LOGGER.error(
+                            "[VERIFY] Batch %d/%d: Detected DECREASING sum at %s "
+                            "(%.2f → %.2f kWh). Data corruption detected!",
+                            batch_num,
+                            total_batches,
+                            stat_time.isoformat(),
+                            prev_sum,
+                            current_sum,
+                        )
+                        corruption_detected = True
+                        # Don't break - check all records in batch
+
+                    prev_sum = current_sum
+
+                if not corruption_detected:
+                    _LOGGER.debug(
+                        "[VERIFY] Batch %d/%d: ✓ All sums non-decreasing (final: %.2f kWh)",
+                        batch_num,
+                        total_batches,
+                        prev_sum if prev_sum is not None else 0.0,
+                    )
+
+                # Success - break retry loop
+                break
+
+            except Exception as err:
+                if attempt < max_retries - 1:
+                    _LOGGER.debug(
+                        "[VERIFY] Batch %d/%d: Error on attempt %d/%d: %s, retrying...",
+                        batch_num,
+                        total_batches,
+                        attempt + 1,
+                        max_retries,
+                        err,
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    _LOGGER.warning(
+                        "[VERIFY] Batch %d/%d: Could not verify batch integrity after %d attempts: %s",
+                        batch_num,
+                        total_batches,
+                        max_retries,
+                        err,
+                    )

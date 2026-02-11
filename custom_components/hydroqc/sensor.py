@@ -10,8 +10,10 @@ from typing import Any, cast
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo  # type: ignore[attr-defined]
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.loader import async_get_integration
 
@@ -59,13 +61,24 @@ async def async_setup_entry(
         if "contract.peak_handler." in data_source_str and coordinator.rate_option != "CPC":
             continue
 
+        # Skip calendar-based sensors if no calendar is configured
+        if (
+            data_source_str.startswith("calendar_peak_handler.")
+            and not coordinator.calendar_peak_handler
+        ):
+            _LOGGER.debug(
+                "Skipping sensor %s (no calendar configured)",
+                sensor_key,
+            )
+            continue
+
         entities.append(HydroQcSensor(coordinator, entry, sensor_key, sensor_config, version))
 
     async_add_entities(entities)
     _LOGGER.debug("Added %d sensor entities", len(entities))
 
 
-class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
+class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], RestoreEntity, SensorEntity):
     """Representation of a Hydro-Québec sensor."""
 
     _attr_has_entity_name = True
@@ -85,18 +98,46 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
         self._sensor_config = sensor_config
         self._data_source = sensor_config["data_source"]
         self._attributes_sources = sensor_config.get("attributes", {})
+        self._restored_value: Any = None
 
         # OpenData mode uses entry_id, Portal mode uses contract info
         contract_name = entry.data.get(CONF_CONTRACT_NAME, "OpenData")
         contract_id = entry.data.get(CONF_CONTRACT_ID, entry.entry_id)
 
         # Entity configuration
-        self._attr_name = sensor_config["name"]
+        self._attr_translation_key = self._sensor_key
         self._attr_unique_id = f"{contract_id}_{sensor_key}"
         self._attr_device_class = sensor_config.get("device_class")
         self._attr_state_class = sensor_config.get("state_class")
         self._attr_native_unit_of_measurement = sensor_config.get("unit")
         self._attr_icon = sensor_config.get("icon")
+
+        # Set entity category for diagnostic sensors
+        if sensor_config.get("diagnostic", False):
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+        # Set entity registry enabled default (for sensors disabled by default)
+        if sensor_config.get("disabled_by_default", False):
+            self._attr_entity_registry_enabled_default = False
+
+        # Set attribution based on data source
+        # Calendar-based sensors show calendar name, others show data source
+        if isinstance(self._data_source, str) and self._data_source.startswith(
+            "calendar_peak_handler."
+        ):
+            # Attribution will be set dynamically in extra_state_attributes
+            # since calendar name may not be available at init time
+            self._attr_attribution = None
+            self._uses_calendar_attribution = True
+        elif isinstance(self._data_source, str) and self._data_source.startswith("public_client."):
+            self._attr_attribution = "Données ouvertes Hydro-Québec"
+            self._uses_calendar_attribution = False
+        elif coordinator.is_portal_mode:
+            self._attr_attribution = "Espace Client Hydro-Québec"
+            self._uses_calendar_attribution = False
+        else:
+            self._attr_attribution = None
+            self._uses_calendar_attribution = False
 
         # Device info
         self._attr_device_info = DeviceInfo(
@@ -107,6 +148,32 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
             sw_version=version,
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Restore last state when entity is added to hass."""
+        await super().async_added_to_hass()
+
+        # Restore previous state to avoid showing unknown during reload
+        if (last_state := await self.async_get_last_state()) is not None:
+            # Try to restore the numeric state
+            try:
+                if last_state.state not in ("unknown", "unavailable"):
+                    # For timestamp sensors, parse the ISO string back to datetime
+                    if self._attr_device_class == "timestamp":
+                        self._restored_value = datetime.datetime.fromisoformat(last_state.state)
+                    else:
+                        self._restored_value = last_state.state
+                    _LOGGER.debug(
+                        "Restored sensor %s state: %s",
+                        self.entity_id,
+                        self._restored_value,
+                    )
+            except (ValueError, TypeError):
+                _LOGGER.debug(
+                    "Could not restore sensor %s state: %s",
+                    self.entity_id,
+                    last_state.state,
+                )
+
     @property
     def native_value(self) -> Any:
         """Return the state of the sensor."""
@@ -116,8 +183,25 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
 
         value = self.coordinator.get_sensor_value(self._data_source)
 
+        # If coordinator hasn't fetched data yet and we have a restored value, use it
+        if value is None and self._restored_value is not None:
+            _LOGGER.debug(
+                "Sensor %s using restored value: %s (coordinator data not yet available)",
+                self.entity_id,
+                self._restored_value,
+            )
+            return self._restored_value
+
         if value is None:
             return None
+
+        # We have fresh data from coordinator, clear the restored value
+        if self._restored_value is not None:
+            _LOGGER.debug(
+                "Sensor %s got fresh data from coordinator, clearing restored value",
+                self.entity_id,
+            )
+            self._restored_value = None
 
         # Format value based on type
         if isinstance(value, datetime.datetime):
@@ -154,8 +238,18 @@ class HydroQcSensor(CoordinatorEntity[HydroQcDataCoordinator], SensorEntity):
         if self.coordinator.last_update_success_time:
             attributes["last_update"] = self.coordinator.last_update_success_time.isoformat()
 
-        # Determine data source
-        if self._data_source.startswith("public_client."):
+        # Determine data source and attribution
+        if self._data_source.startswith("calendar_peak_handler."):
+            attributes["data_source"] = "calendar"
+            # Set attribution dynamically based on calendar name
+            if (
+                hasattr(self.coordinator, "calendar_peak_handler")
+                and self.coordinator.calendar_peak_handler
+            ):
+                calendar_name = self.coordinator.calendar_peak_handler.calendar_name
+                if calendar_name:
+                    attributes["attribution"] = f"Calendrier {calendar_name}"
+        elif self._data_source.startswith("public_client."):
             attributes["data_source"] = "open_data"
         elif self.coordinator.is_portal_mode:
             attributes["data_source"] = "portal"

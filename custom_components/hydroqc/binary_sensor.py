@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -36,8 +37,9 @@ async def async_setup_entry(
 
     for sensor_key, sensor_config in BINARY_SENSORS.items():
         # Check if sensor is applicable for this rate
-        if "ALL" not in sensor_config["rates"]:
-            if coordinator.rate_with_option not in sensor_config["rates"]:
+        rates = cast(list[str], sensor_config["rates"])
+        if "ALL" not in rates:
+            if coordinator.rate_with_option not in rates:
                 continue
 
         # In opendata mode, only create sensors that use public_client data
@@ -52,10 +54,19 @@ async def async_setup_entry(
 
         # Skip winter credit sensors (contract.peak_handler) if not DCPC
         # Note: public_client.peak_handler sensors should NOT be skipped
+        data_source_str = cast(str, sensor_config["data_source"])
+        if "contract.peak_handler." in data_source_str and coordinator.rate_option != "CPC":
+            continue
+
+        # Skip calendar-based sensors if no calendar is configured
         if (
-            "contract.peak_handler." in sensor_config["data_source"]
-            and coordinator.rate_option != "CPC"
+            data_source_str.startswith("calendar_peak_handler.")
+            and not coordinator.calendar_peak_handler
         ):
+            _LOGGER.debug(
+                "Skipping binary sensor %s (no calendar configured)",
+                sensor_key,
+            )
             continue
 
         entities.append(HydroQcBinarySensor(coordinator, entry, sensor_key, sensor_config, version))
@@ -92,10 +103,37 @@ class HydroQcBinarySensor(
         contract_id = entry.data.get(CONF_CONTRACT_ID, entry.entry_id)
 
         # Entity configuration
-        self._attr_name = sensor_config["name"]
+        self._attr_translation_key = self._sensor_key
         self._attr_unique_id = f"{contract_id}_{sensor_key}"
         self._attr_device_class = sensor_config.get("device_class")
         self._attr_icon = sensor_config.get("icon")
+
+        # Set entity category for diagnostic sensors
+        if sensor_config.get("diagnostic", False):
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+        # Set entity registry enabled default (for sensors disabled by default)
+        if sensor_config.get("disabled_by_default", False):
+            self._attr_entity_registry_enabled_default = False
+
+        # Set attribution based on data source
+        # Calendar-based sensors show calendar name, others show data source
+        if isinstance(self._data_source, str) and self._data_source.startswith(
+            "calendar_peak_handler."
+        ):
+            # Attribution will be set dynamically in extra_state_attributes
+            # since calendar name may not be available at init time
+            self._attr_attribution = None
+            self._uses_calendar_attribution = True
+        elif isinstance(self._data_source, str) and self._data_source.startswith("public_client."):
+            self._attr_attribution = "Données ouvertes Hydro-Québec"
+            self._uses_calendar_attribution = False
+        elif coordinator.is_portal_mode:
+            self._attr_attribution = "Espace Client Hydro-Québec"
+            self._uses_calendar_attribution = False
+        else:
+            self._attr_attribution = None
+            self._uses_calendar_attribution = False
 
         # Device info
         self._attr_device_info = DeviceInfo(
@@ -183,8 +221,18 @@ class HydroQcBinarySensor(
         if self.coordinator.last_update_success_time:
             attributes["last_update"] = self.coordinator.last_update_success_time.isoformat()
 
-        # Determine data source
-        if self._data_source.startswith("public_client."):
+        # Determine data source and attribution
+        if self._data_source.startswith("calendar_peak_handler."):
+            attributes["data_source"] = "calendar"
+            # Set attribution dynamically based on calendar name
+            if (
+                hasattr(self.coordinator, "calendar_peak_handler")
+                and self.coordinator.calendar_peak_handler
+            ):
+                calendar_name = self.coordinator.calendar_peak_handler.calendar_name
+                if calendar_name:
+                    attributes["attribution"] = f"Calendrier {calendar_name}"
+        elif self._data_source.startswith("public_client."):
             attributes["data_source"] = "open_data"
         elif self.coordinator.is_portal_mode:
             attributes["data_source"] = "portal"

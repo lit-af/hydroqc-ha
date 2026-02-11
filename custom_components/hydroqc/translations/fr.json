@@ -35,48 +35,36 @@
           "contract": "Sélectionnez le contrat que vous souhaitez ajouter à Home Assistant"
         }
       },
-      "configure_preheat": {
-        "title": "Configurer la durée de préchauffage",
-        "description": "Configurez quand déclencher les alertes de préchauffage pour {rate_name}",
-        "data": {
-          "preheat_duration_minutes": "Durée de préchauffage (minutes)"
-        },
-        "data_description": {
-          "preheat_duration_minutes": "Durée avant les pointes critiques pour déclencher le préchauffage (0-240 minutes, défaut: 120)"
-        }
-      },
       "calendar": {
-        "title": "Intégration calendrier (optionnel)",
-        "description": "Créer automatiquement des événements de calendrier pour les périodes de pointe critique pour {contract_name}. Les événements utilisent des titres français standardisés pour la compatibilité avec les blueprints.",
+        "title": "Configuration du calendrier (requis)",
+        "description": "Un **calendrier dédié est requis** pour les capteurs de pointe de {contract_name}.\n\nTous les capteurs d'événements de pointe (état, prochaines pointes, préchauffage) lisent leurs données depuis ce calendrier.\n\n⚠️ **Important**: Utilisez un calendrier dédié pour HydroQc - n'utilisez pas un calendrier partagé.\n\n📅 Vous n'avez pas de calendrier? [Créer un calendrier local](/config/integrations/integration/local_calendar)",
         "data": {
-          "calendar_entity_id": "Entité calendrier (optionnel)",
-          "include_non_critical_peaks": "Inclure les pointes non critiques"
+          "calendar_entity_id": "Entité calendrier"
         },
         "data_description": {
-          "calendar_entity_id": "Sélectionnez une entité calendrier pour créer les événements de pointe. Laissez vide pour ignorer l'intégration calendrier.",
-          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut sans annonce API)"
+          "calendar_entity_id": "Sélectionnez une entité calendrier dédiée pour les événements de pointe. Ce calendrier stockera toutes les périodes de pointe."
         }
       },
       "calendar_opendata": {
-        "title": "Intégration calendrier (optionnel)",
-        "description": "Créer automatiquement des événements de calendrier pour les périodes de pointe critique pour {contract_name}. Les événements utilisent des titres français standardisés pour la compatibilité avec les blueprints.",
+        "title": "Configuration du calendrier (requis)",
+        "description": "Un **calendrier dédié est requis** pour les capteurs de pointe de {contract_name}.\n\nTous les capteurs d'événements de pointe (état, prochaines pointes, préchauffage) lisent leurs données depuis ce calendrier.\n\n⚠️ **Important**: Utilisez un calendrier dédié pour HydroQc - n'utilisez pas un calendrier partagé.\n\n📅 Vous n'avez pas de calendrier? [Créer un calendrier local](/config/integrations/integration/local_calendar)",
         "data": {
-          "calendar_entity_id": "Entité calendrier (optionnel)",
-          "include_non_critical_peaks": "Inclure les pointes non critiques"
+          "calendar_entity_id": "Entité calendrier"
         },
         "data_description": {
-          "calendar_entity_id": "Sélectionnez une entité calendrier pour créer les événements de pointe. Laissez vide pour ignorer l'intégration calendrier.",
-          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut sans annonce API)"
+          "calendar_entity_id": "Sélectionnez une entité calendrier dédiée pour les événements de pointe. Ce calendrier stockera toutes les périodes de pointe."
         }
       },
       "import_history": {
         "title": "Importer l'historique de consommation",
-        "description": "Combien de jours d'historique de consommation souhaitez-vous importer? Les 30 derniers jours seront synchronisés automatiquement. L'historique maximum disponible est de 800 jours. Définissez à 0 pour ignorer l'importation d'historique supplémentaire. L'importation se fait en arrière-plan et peut prendre plusieurs minutes.",
+        "description": "Configurez la synchronisation de consommation pour le tableau de bord énergétique. Activez pour importer les données de consommation horaire. Si activé, les 30 derniers jours seront synchronisés automatiquement. L'historique maximum disponible est de 800 jours. Définissez à 0 pour ignorer l'importation d'historique supplémentaire. L'importation se fait en arrière-plan et peut prendre plusieurs minutes.",
         "data": {
+          "enable_consumption_sync": "Activer la synchronisation de consommation",
           "history_days": "Jours d'historique à importer"
         },
         "data_description": {
-          "history_days": "Nombre de jours à importer (0-800). Définissez à 0 pour synchroniser uniquement les 30 derniers jours, ou entrez une valeur pour l'historique plus ancien."
+          "enable_consumption_sync": "Activer pour créer les capteurs de consommation et synchroniser les données horaires pour le tableau de bord énergétique. Désactiver si vous n'avez pas besoin du suivi de consommation ou avez une autre intégration qui fournit ces données.",
+          "history_days": "Nombre de jours à importer (0-800). Définissez à 0 pour synchroniser uniquement les 30 derniers jours, ou entrez une valeur pour l'historique plus ancien. S'applique uniquement si la synchronisation de consommation est activée."
         }
       },
       "opendata": {
@@ -94,13 +82,11 @@
         "description": "Sélectionnez votre tarif d'électricité pour les clients {sector}. Les options disponibles sont récupérées depuis l'API publique d'Hydro-Québec",
         "data": {
           "contract_name": "Nom du contrat",
-          "rate_selection": "Tarif",
-          "preheat_duration_minutes": "Durée de préchauffage (minutes)"
+          "rate_selection": "Tarif"
         },
         "data_description": {
           "contract_name": "Un nom convivial pour cette configuration (ex: 'Maison', 'Chalet')",
-          "rate_selection": "Sélectionnez votre tarif d'électricité parmi les options disponibles",
-          "preheat_duration_minutes": "Durée avant les pointes critiques pour déclencher le préchauffage (0-240 minutes, défaut: 120)"
+          "rate_selection": "Sélectionnez votre tarif d'électricité parmi les options disponibles"
         }
       }
     },
@@ -108,6 +94,10 @@
       "cannot_connect": "Échec de connexion à Hydro-Québec",
       "invalid_auth": "Nom d'utilisateur ou mot de passe invalide",
       "no_contracts": "Aucun contrat trouvé pour ce compte",
+      "portal_unavailable": "Le portail Hydro-Québec est actuellement indisponible. Veuillez réessayer plus tard.",
+      "portal_maintenance": "Le portail Hydro-Québec est en maintenance (Erreur 500). Veuillez réessayer dans quelques heures.",
+      "calendar_required": "Un calendrier est requis pour les tarifs DPC/DCPC. Tous les capteurs de pointe dépendent des événements du calendrier.",
+      "calendar_not_found": "Entité calendrier non trouvée. Veuillez d'abord créer un calendrier.",
       "unknown": "Erreur inattendue"
     },
     "abort": {
@@ -122,16 +112,201 @@
         "data": {
           "update_interval": "Intervalle de mise à jour (secondes)",
           "preheat_duration_minutes": "Durée de préchauffage (minutes)",
-          "calendar_entity_id": "Entité calendrier (optionnel)",
-          "include_non_critical_peaks": "Inclure les pointes non critiques"
+          "enable_consumption_sync": "Activer la synchronisation de consommation",
+          "calendar_entity_id": "Entité calendrier"
         },
         "data_description": {
           "update_interval": "Fréquence de récupération des données d'Hydro-Québec (30-600 secondes)",
           "preheat_duration_minutes": "Durée avant les événements de pointe critique pour déclencher le préchauffage (0-240 minutes)",
-          "calendar_entity_id": "Entité calendrier pour les événements de pointe (tarifs DPC/DCPC seulement). Laissez vide pour désactiver.",
-          "include_non_critical_peaks": "Créer aussi des événements pour les périodes de pointe non critiques (horaire par défaut)"
+          "enable_consumption_sync": "Activer pour synchroniser les données de consommation horaire pour le tableau de bord énergétique. Nécessite un rechargement de l'intégration pour prendre effet.",
+          "calendar_entity_id": "Entité calendrier pour les événements de pointe (tarifs DPC/DCPC seulement). Requis pour le fonctionnement des capteurs de pointe."
         }
       }
+    },
+    "error": {
+      "calendar_required": "Un calendrier est requis pour les tarifs DPC/DCPC. Tous les capteurs de pointe dépendent des événements du calendrier.",
+      "calendar_not_found": "Entité calendrier non trouvée. Veuillez d'abord créer un calendrier."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "balance": {
+        "name": "Solde"
+      },
+      "current_billing_period_current_day": {
+        "name": "Jour période facturation"
+      },
+      "current_billing_period_duration": {
+        "name": "Durée période facturation"
+      },
+      "current_billing_period_total_to_date": {
+        "name": "Total facture à ce jour"
+      },
+      "current_billing_period_projected_bill": {
+        "name": "Facture projetée"
+      },
+      "current_billing_period_daily_bill_mean": {
+        "name": "Moyenne quotidienne facture"
+      },
+      "current_billing_period_daily_consumption_mean": {
+        "name": "Moyenne quotidienne conso"
+      },
+      "current_billing_period_total_consumption": {
+        "name": "Conso. totale"
+      },
+      "current_billing_period_projected_total_consumption": {
+        "name": "Conso. totale projetée"
+      },
+      "current_billing_period_average_temperature": {
+        "name": "Température moyenne"
+      },
+      "current_billing_period_kwh_cost_mean": {
+        "name": "Coût moyen kWh"
+      },
+      "current_billing_period_rate": {
+        "name": "Tarif actuel"
+      },
+      "current_billing_period_rate_option": {
+        "name": "Option tarifaire"
+      },
+      "outage": {
+        "name": "État panne"
+      },
+      "current_billing_period_higher_price_consumption": {
+        "name": "Conso. prix supérieur"
+      },
+      "current_billing_period_lower_price_consumption": {
+        "name": "Conso. prix inférieur"
+      },
+      "amount_saved_vs_base_rate": {
+        "name": "Différence Flex D vs Tarif D"
+      },
+      "dpc_state": {
+        "name": "État DPC"
+      },
+      "dpc_next_peak_start": {
+        "name": "Début prochaine pointe"
+      },
+      "dpc_next_peak_end": {
+        "name": "Fin prochaine pointe"
+      },
+      "dpc_next_pre_heat_start": {
+        "name": "Début prochain préchauffage"
+      },
+      "dpc_critical_hours_count": {
+        "name": "Heures de pointe"
+      },
+      "dpc_winter_days_count": {
+        "name": "Jours d'hiver"
+      },
+      "wc_state": {
+        "name": "État Crédit Hivernal"
+      },
+      "wc_cumulated_credit": {
+        "name": "Crédit hivernal total"
+      },
+      "wc_projected_cumulated_credit": {
+        "name": "Crédit hivernal projeté"
+      },
+      "wc_next_anchor_start": {
+        "name": "Début du prochain ancrage"
+      },
+      "wc_next_anchor_end": {
+        "name": "Fin du prochain ancrage"
+      },
+      "wc_next_peak_start": {
+        "name": "Début prochaine pointe"
+      },
+      "wc_next_peak_end": {
+        "name": "Fin prochaine pointe"
+      },
+      "wc_next_critical_peak_start": {
+        "name": "Début prochaine pointe critique"
+      },
+      "wc_next_critical_peak_end": {
+        "name": "Fin prochaine pointe critique"
+      },
+      "wc_next_pre_heat_start": {
+        "name": "Début prochain préchauffage"
+      },
+      "wc_yesterday_morning_peak_credit": {
+        "name": "Crédit hier matin"
+      },
+      "wc_yesterday_morning_peak_actual_consumption": {
+        "name": "Conso. réelle hier matin"
+      },
+      "wc_yesterday_morning_peak_ref_consumption": {
+        "name": "Conso. réf. hier matin"
+      },
+      "wc_yesterday_morning_peak_saved_consumption": {
+        "name": "Conso. éco. hier matin"
+      },
+      "wc_yesterday_evening_peak_credit": {
+        "name": "Crédit hier soir"
+      },
+      "wc_yesterday_evening_peak_actual_consumption": {
+        "name": "Conso. réelle hier soir"
+      },
+      "wc_yesterday_evening_peak_ref_consumption": {
+        "name": "Conso. réf. hier soir"
+      },
+      "wc_yesterday_evening_peak_saved_consumption": {
+        "name": "Conso. éco. hier soir"
+      }
+    },
+    "binary_sensor": {
+      "current_period_epp_enabled": {
+        "name": "MVE actif"
+      },
+      "wc_critical": {
+        "name": "Période critique"
+      },
+      "wc_critical_peak_in_progress": {
+        "name": "Pointe critique active"
+      },
+      "wc_pre_heat": {
+        "name": "Préchauffage actif"
+      },
+      "wc_next_anchor_critical": {
+        "name": "Prochain ancrage critique"
+      },
+      "wc_next_peak_critical": {
+        "name": "Prochaine pointe critique"
+      },
+      "wc_upcoming_critical_peak": {
+        "name": "Pointe critique à venir"
+      },
+      "wc_critical_morning_peak_today": {
+        "name": "Pointe matin aujourd'hui"
+      },
+      "wc_critical_evening_peak_today": {
+        "name": "Pointe soir aujourd'hui"
+      },
+      "wc_critical_morning_peak_tomorrow": {
+        "name": "Pointe matin demain"
+      },
+      "wc_critical_evening_peak_tomorrow": {
+        "name": "Pointe soir demain"
+      },
+      "dpc_pre_heat": {
+        "name": "Préchauffage actif"
+      },
+      "dpc_peak_in_progress": {
+        "name": "Pointe critique active"
+      },
+      "dpc_critical_morning_peak_today": {
+        "name": "Pointe matin aujourd'hui"
+      },
+      "dpc_critical_evening_peak_today": {
+        "name": "Pointe soir aujourd'hui"
+      },
+      "dpc_critical_morning_peak_tomorrow": {
+        "name": "Pointe matin demain"
+      },
+      "dpc_critical_evening_peak_tomorrow": {
+        "name": "Pointe soir demain"      },
+      "portal_status": {
+        "name": "Statut du portail"      }
     }
   }
 }

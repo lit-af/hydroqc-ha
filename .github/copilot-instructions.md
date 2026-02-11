@@ -21,11 +21,27 @@ This is a **Home Assistant custom component** for monitoring Hydro-Québec elect
    - **`coordinator/consumption_sync.py`**: ConsumptionSyncMixin for consumption history sync
    - **`coordinator/sensor_data.py`**: SensorDataMixin for sensor value retrieval
    - **`coordinator.py`**: Root-level re-export for backward compatibility
-   - Manages both Portal mode (`WebUser`/`Customer`/`Account`/`Contract` hierarchy) and OpenData mode (`PublicClient`) 
-   - Updates every 60 seconds (configurable via `CONF_UPDATE_INTERVAL`)
+   - Manages both Portal mode (`WebUser`/`Customer`/`Account`/`Contract` hierarchy) and OpenData mode (`PublicClient`)
+   - **Manual scheduling only** - `update_interval=None` disables DataUpdateCoordinator's automatic polling
+   - Instead of automatic polling every X seconds, uses explicit time-based triggers with `async_track_time_change()`
+   - **Three independent schedulers**:
+     - **OpenData**: Every 15 minutes with random offset (checks time windows before fetching)
+     - **Portal**: Every hour with random offset (checks time windows before fetching)
+     - **Calendar**: Every 15 minutes at fixed intervals (refreshes calendar-based sensor data)
+   - **Smart time windows**:
+     - OpenData: 10:30-15:00 EST (15 min interval) / other times (60 min) / off-season (disabled)
+     - Portal: 00:00-08:00 EST (60 min interval) / other times (180 min)
+   - **Anti-thundering herd**: OpenData scheduler uses random minute (0-14) and second offset based on integration start time to distribute API calls across users
+   - **Calendar as source of truth**: Peak sensors read from `CalendarPeakHandler` which loads events from HA calendar entity, making data persistent across restarts
+   - **Sensors only update when data actually fetched** - raises `UpdateFailed` when no new data to prevent unnecessary sensor updates
    - Uses dot-notation paths (`get_sensor_value()`) to extract nested data: e.g., `"contract.cp_current_bill"` → `coordinator.data["contract"].cp_current_bill`
    - `is_sensor_seasonal()`: Portal mode sensors with `peak_handler` are seasonal (Dec 1 - Mar 31), OpenData sensors are always available
-   - **Task management**: Separate `_csv_import_task` and `_regular_sync_task` per coordinator instance (per contract)
+   - **Data preservation**: Previous portal data preserved when updates skipped (prevents "unknown" values)
+   - **Portal status tracking**: `_portal_available` tracks portal online status, checked before operations
+   - **Task management**: Separate background tasks per coordinator instance (per contract):
+     - `_csv_import_task`: Bulk historical consumption import
+     - `_regular_sync_task`: Incremental consumption sync
+     - `_calendar_sync_task`: Calendar event synchronization from OpenData to HA calendar
    - `is_consumption_history_syncing`: Only checks `_csv_import_task` status (not regular sync)
    - **Logging prefixes**: Portal mode logs use `[Portal]` prefix, public API logs use `[OpenData]` prefix
 
@@ -47,12 +63,34 @@ This is a **Home Assistant custom component** for monitoring Hydro-Québec elect
    - Auto-generated from `SENSORS` and `BINARY_SENSORS` dicts in `const.py`
    - Filtered by rate: sensors specify `rates` list (`["ALL"]`, `["DPC"]`, `["DCPC"]`, etc.)
    - Rate-specific: Use `coordinator.rate_with_option` (e.g., `"DCPC"` = D+CPC, `"DPC"` = Flex-D)
+   - **State restoration**: Both inherit from `RestoreEntity` to preserve last known state across restarts
+   - **Diagnostic sensors**: 31 entities marked with `EntityCategory.DIAGNOSTIC` flag (declutters main entity list)
+   - **Disabled by default**: 14 non-essential sensors disabled by default (can be manually enabled)
+   - **Attribution**: Sensors show data source ("Espace Client Hydro-Québec" or "Données ouvertes Hydro-Québec")
 
-4. **`const.py`** - Single source of truth for sensor definitions
+4. **`calendar_peak_handler.py`** - `CalendarPeakHandler`: Calendar-based peak handler
+   - **Source of truth for peak sensors**: Reads events from HA calendar entity instead of OpenData API directly
+   - **Persistent across restarts**: Calendar events survive HA restarts, unlike in-memory API data
+   - **`CalendarPeakEvent`**: Simplified event model parsed from calendar events (vs `PeakEvent` from OpenData)
+   - **DCPC schedule generation**: Locally generates non-critical peaks (6-10h, 16-20h) for today/tomorrow
+   - **Event parsing**: Extracts criticality, rate, and times from calendar event description
+   - **Same interface as `PeakHandler`**: Properties like `current_state`, `next_peak`, `preheat_in_progress` for sensor compatibility
+   - **Logging prefix**: `[Calendar]`
+
+5. **`button.py`** - Manual refresh button entity
+   - **Only for DPC/DCPC rates** with calendar configured
+   - **Triggers**: OpenData fetch → signature check → calendar sync (if changed) → calendar refresh
+   - **Does NOT refresh Portal data**: Only peak announcements and calendar-based sensor data
+   - **Diagnostic category**: Hidden from main entity list by default
+   - **Logging prefix**: `[Button]`
+
+6. **`const.py`** - Single source of truth for sensor definitions
    - Each sensor: `data_source`, `device_class`, `state_class`, `icon`, `unit`, `rates`, optional `attributes`
-   - Data sources use dot notation: `"contract.peak_handler.cumulated_credit"`, `"public_client.peak_handler.current_state"`
+   - Data sources use dot notation: `"contract.peak_handler.cumulated_credit"`, `"calendar_peak_handler.current_state"`
+   - **Diagnostic flag**: `"diagnostic": True` marks sensors for diagnostic category
+   - **Disabled by default flag**: `"disabled_by_default": True` disables sensors on first setup (can be enabled manually)
 
-5. **`public_data/`** package - Public API peak data handler
+7. **`public_data/`** package - Public API peak data handler
    - **`public_data/models.py`**: Data classes (PreHeatPeriod, AnchorPeriod, PeakEvent)
    - **`public_data/peak_handler.py`**: PeakHandler class with peak event logic and calculations
    - **`public_data/client.py`**: PublicDataClient for OpenData API interactions
@@ -83,6 +121,12 @@ from .config_flow.base import HydroQcConfigFlow  # Direct import
 
 from .public_data_client import PublicDataClient, PeakHandler, PeakEvent
 from .public_data.client import PublicDataClient  # Direct import
+
+# Calendar-based peak handling (source of truth for sensors)
+from .calendar_peak_handler import CalendarPeakHandler, CalendarPeakEvent
+
+# Button entity (manual refresh)
+from .button import HydroQcRefreshPeakDataButton
 ```
 
 #### Package Structure Details
@@ -102,6 +146,17 @@ from .public_data.client import PublicDataClient  # Direct import
 - `models.py`: Data classes with no business logic (PreHeatPeriod, AnchorPeriod, PeakEvent)
 - `peak_handler.py`: Business logic (PeakHandler - schedule generation, critical peak detection)
 - `client.py`: API client (PublicDataClient - HTTP calls, response parsing)
+
+**calendar_peak_handler.py** - Calendar-based peak handler:
+- `CalendarPeakHandler`: Reads events from HA calendar entity, generates DCPC schedule
+- `CalendarPeakEvent`: Event model parsed from calendar (start, end, is_critical, rate)
+- `PreHeatPeriod`: Pre-heat period calculation (configurable duration before peak)
+- Provides same interface as `PeakHandler` for sensor compatibility
+
+**button.py** - Manual refresh button:
+- `HydroQcRefreshPeakDataButton`: Button entity for manual peak data refresh
+- Only created for DPC/DCPC rates with calendar configured
+- Triggers OpenData fetch, signature-based calendar sync, and sensor refresh
 
 #### Development Guidelines
 - **Single responsibility**: Each module has one focused purpose
@@ -213,12 +268,40 @@ just restart  # Restart HA container to reload integration
 ### Key Files to Check First
 - **README.md**: User-facing features, supported rates, installation
 - **CONTRIBUTING.md**: Commit conventions, PR requirements, rate-specific feature guidelines
-
 - **pyproject.toml**: Python 3.13, uv config, ruff rules (line-length 100, select E/W/F/I/UP/B/C4/SIM/RET/ARG/PTH/PL/RUF)
 - **uv.lock**: Lock file for reproducible builds (commit this file)
 - **justfile**: All dev commands (start, stop, restart, logs, qa, test)
 - **custom_components/hydroqc/const.py**: Sensor definitions, rate mappings
-- **pyproject.toml**: Python 3.13, ruff rules (line-length 100, select E/W/F/I/UP/B/C4/SIM/RET/ARG/PTH/PL/RUF)
+
+## Dependency Management
+
+### CI Compatibility Matrix
+
+The project uses a **multi-layered approach** to dependency management:
+1. **Dependabot** - Automated weekly dependency updates (Mondays 5:00 AM)
+2. **CI Matrix Testing** - Tests against multiple HA versions + latest hydroqc
+3. **homeassistant-stubs** - Static type checking catches API breakages early
+
+**Matrix Coverage** (`.github/workflows/ci.yml`):
+- HA versions: `2024.12.0` (minimum), `stable`, `beta` (pre-release)
+- hydroqc: Latest version only (pinned version tested in main test job)
+- Creates **3 test combinations** per PR with matching HA stubs for type checking
+
+**Key Dependencies**:
+- `Hydro-Quebec-API-Wrapper==4.2.6` - Pinned exactly (in manifest.json + pyproject.toml)
+- `homeassistant-stubs>=2025.1.0` - Dev dependency for type hints
+- Dependabot ignores major updates for homeassistant and hydroqc (require manual review)
+- Dependabot groups homeassistant-stubs with homeassistant updates
+
+**Why homeassistant-stubs?**
+- Catches HA API compatibility issues at **type-check time** (much faster than runtime)
+- Better IDE autocomplete and error detection
+- Proactive compatibility checking against beta versions
+
+**Updating Dependencies**:
+1. Dependabot opens PR with version bump + assigns reviewer
+2. CI runs: quality checks, full tests, **compatibility matrix** (3 HA versions), type check, import validation
+3. Review decision: dev deps (safe), HA updates (manual testing required), hydroqc updates (API compatibility check)
 
 ## Code Conventions
 
@@ -257,11 +340,110 @@ just restart  # Restart HA container to reload integration
 
 **Sensors are always available** - they never become "unavailable" in Home Assistant, instead showing the last known value. This ensures historical data is preserved even during temporary outages.
 
+**State restoration**: Both sensor and binary_sensor entities inherit from `RestoreEntity` to preserve their last known state across Home Assistant restarts and during inactive refresh windows.
+
 **All sensors include these attributes:**
 - `last_update`: ISO 8601 timestamp of last successful data fetch
 - `data_source`: One of `"portal"` (authenticated), `"open_data"` (public API), or `"unknown"`
 
 **Sensor-specific attributes** are defined in the `attributes` dict in `const.py` and extracted via dot notation paths.
+
+**Diagnostic sensors**: 31 entities marked with `EntityCategory.DIAGNOSTIC`:
+- Portal status (1 binary sensor)
+- Billing period details (4 sensors)
+- Technical information (3 sensors)
+- Peak-related sensors (15 binary sensors + 2 sensors for preheat times)
+
+**Disabled by default**: 14 non-essential sensors disabled on first setup:
+- Rate/rate option (2 sensors)
+- Portal status (1 binary sensor)
+- EPP enabled (1 binary sensor)
+- Winter days count (1 sensor)
+- Preheat start times (2 sensors)
+- Preheat in progress (2 binary sensors)
+- Peak today/tomorrow sensors (8 binary sensors)
+
+### Smart Refresh Scheduling System
+
+**Overview**: The coordinator uses three independent schedulers instead of automatic polling. This enables smart time windows, distributed API calls, and separation of concerns between data sources.
+
+**Key Design Principles**:
+- `update_interval=None` - Automatic polling disabled
+- Each scheduler uses `async_track_time_change()` for precise timing
+- Calendar is the persistent source of truth for peak sensors (survives restarts)
+- Signature-based change detection for efficient calendar sync
+
+**The Three Schedulers**:
+
+1. **OpenData Scheduler** (`_async_scheduled_opendata_update`):
+   - **Interval**: Every 15 minutes (at offset minutes: 0+offset, 15+offset, 30+offset, 45+offset)
+   - **Active window**: 10:30-15:00 EST (when HQ typically announces critical peaks)
+   - **Inactive interval**: 60 minutes
+   - **Off-season**: Disabled (Dec 1 - Mar 31 only)
+   - **Anti-thundering herd**: Random minute offset (`now.minute % 15`) and second offset (`now.second`) calculated at integration startup distributes API calls across users
+
+2. **Portal Scheduler** (`_async_scheduled_portal_update`):
+   - **Interval**: Every hour with random offset (minute=offset, second=offset)
+   - **Active window**: 00:00-08:00 EST (60 min interval)
+   - **Inactive interval**: 180 minutes (3 hours)
+   - **Anti-thundering herd**: Same random minute/second offset as OpenData
+   - **Checks**: `_should_update_portal()` based on elapsed time and window
+
+3. **Calendar Scheduler** (`_async_scheduled_calendar_refresh`):
+   - **Interval**: Every 15 minutes at fixed times (minute=[0,15,30,45], second=0)
+   - **Purpose**: Catch manual calendar event changes made by users
+   - **Independent**: Does not trigger full coordinator refresh, only refreshes `CalendarPeakHandler`
+   - **Winter season only**: Skipped outside Dec 1 - Mar 31
+
+**Signature-Based Change Detection**:
+```python
+def _get_critical_events_signature(self) -> str:
+    """Get signature of critical events for change detection."""
+    events = sorted(critical_events, key=lambda e: e.start_date)
+    return "|".join(f"{e.start_date.isoformat()}_{e.end_date.isoformat()}" for e in events)
+```
+
+Detects:
+- New events added (any position in list)
+- Events removed
+- Event times modified
+- Event replacements (same count, different events)
+
+**Calendar as Source of Truth**:
+- OpenData API fetches peak announcements → writes critical events to HA calendar
+- `CalendarPeakHandler` reads from calendar → provides data to sensors
+- Calendar persists across HA restarts (unlike in-memory API data)
+- Non-critical DCPC schedule generated locally (not stored in calendar)
+
+**Data Flow**:
+```
+OpenData API → PublicDataClient.fetch_peak_data() → signature check
+    ↓ (if signature changed)
+Calendar Sync → _async_sync_calendar_events() → creates/updates HA calendar events
+    ↓
+CalendarPeakHandler.load_events() → reads from HA calendar
+    ↓
+Sensors → read from CalendarPeakHandler properties
+```
+
+**Calendar Sync Details**:
+- Only syncs **critical** events (non-critical DCPC schedule is generated, not synced)
+- Uses HA's `hass.helpers.storage` to persist created event UIDs across restarts
+- Storage key: `hydroqc_{contract_id}_calendar_uids`
+- Prevents duplicate events on restart
+
+**Portal Status Tracking**:
+- `check_hq_portal_status()` called before portal operations
+- `_portal_available` tracked for binary sensor
+- Offline warnings logged once per hour (prevents spam)
+
+**Consumption Sync** (independent from peak scheduling):
+- Triggered at the end of successful portal data fetches (piggybacks on portal updates)
+- Checks if 60+ minutes elapsed since last sync
+- Runs as background task (`_regular_sync_task`) without blocking sensor updates
+- Writes directly to Home Assistant's statistics database (not part of coordinator data)
+- Two types: CSV import (`_csv_import_task`) for historical bulk data, regular sync for recent incremental updates
+- Background tasks managed separately (`_calendar_sync_task`, `_csv_import_task`, `_regular_sync_task`)
 
 ### Adding New Sensors
 1. Add entry to `SENSORS` or `BINARY_SENSORS` in `const.py`:
@@ -274,6 +456,8 @@ just restart  # Restart HA container to reload integration
        "icon": "mdi:flash",
        "unit": "kWh",
        "rates": ["DPC", "DCPC"],  # Or ["ALL"]
+       "diagnostic": False,  # True for diagnostic category
+       "disabled_by_default": False,  # True to disable on first setup
        "attributes": {  # Optional extra attributes
            "max": "contract.max_value",
        },
@@ -494,9 +678,22 @@ Two methods for importing consumption history:
 - **Task separation**: CSV import uses `_csv_import_task`, regular sync uses `_regular_sync_task` - never confuse them
 - **History import threshold**: Only trigger CSV import for >30 days (regular sync covers ≤30 days efficiently)
 - **Statistics naming**: Display names include contract name prefix (e.g., "Home Total Hourly Consumption")
-  - Main classes: `WebUser`, `Customer`, `Account`, `Contract`, `PublicClient`
-  - Contract types: `ContractDCPC`, `ContractDPC`, `ContractDT` (subclasses of `Contract`)
-- **Home Assistant 2024.1.0+**: Uses `DataUpdateCoordinator`, `ConfigFlow`, `CoordinatorEntity`
+- **Coordinator scheduling**: Manual scheduling only (`update_interval=None`) - sensors only update when data actually fetched
+- **Data preservation**: Portal data preserved when updates skipped - prevents "unknown" values during inactive windows
+- **Portal status**: Always check `_portal_available` before operations, tracked from `check_hq_portal_status()`
+- **UpdateFailed pattern**: Raise `UpdateFailed` when no new data fetched to prevent unnecessary sensor updates
+- **State restoration**: Sensors and binary sensors inherit from `RestoreEntity` - preserve state across restarts
+- **Diagnostic sensors**: Use `EntityCategory.DIAGNOSTIC` for 31 non-essential entities (billing details, peaks, technical info)
+- **Disabled by default**: Use `disabled_by_default=True` for 14 sensors users rarely need (can be manually enabled)
+- **Calendar sync**: Only triggers when critical peak signature changes (not count) - detects additions, removals, time changes, and replacements
+- **Calendar as source of truth**: Peak sensors read from `CalendarPeakHandler` which loads from HA calendar, not directly from OpenData API. This makes peak data persistent across HA restarts.
+- **Signature-based detection**: Calendar sync uses event signature (sorted ISO timestamps) not event count. This detects additions, removals, time changes, and replacements.
+- **Button refresh scope**: The manual refresh button only refreshes OpenData peak data and calendar - it does NOT refresh Portal data (billing, consumption, winter credits).
+- **Calendar UID persistence**: Created calendar event UIDs are stored via `hass.helpers.storage` to prevent duplicates on restart.
+- **CalendarPeakEvent vs PeakEvent**: `CalendarPeakEvent` (from `calendar_peak_handler.py`) is parsed from HA calendar events; `PeakEvent` (from `public_data/models.py`) is parsed from OpenData API responses. Both provide similar interfaces for sensor compatibility.
+- **Three separate tasks**: `_calendar_sync_task` (calendar sync), `_csv_import_task` (bulk consumption import), `_regular_sync_task` (incremental consumption sync) - never confuse them.
+- **DCPC non-critical schedule**: Generated locally by `CalendarPeakHandler` for today+tomorrow only - not stored in calendar or fetched from API.
+- **OpenData active window**: 10:30-15:00 EST (not 11:00-18:00) - this is when HQ typically announces critical peaks around noon.
 
 ## Processus de Release
 

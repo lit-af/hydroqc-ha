@@ -8,7 +8,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.helpers.selector import (
-    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -18,14 +17,11 @@ from homeassistant.helpers.selector import (
 
 from ..const import (
     CONF_CALENDAR_ENTITY_ID,
-    CONF_INCLUDE_NON_CRITICAL_PEAKS,
+    CONF_ENABLE_CONSUMPTION_SYNC,
     CONF_PREHEAT_DURATION,
     CONF_RATE,
     CONF_RATE_OPTION,
-    CONF_UPDATE_INTERVAL,
-    DEFAULT_INCLUDE_NON_CRITICAL_PEAKS,
     DEFAULT_PREHEAT_DURATION,
-    DEFAULT_UPDATE_INTERVAL,
 )
 
 
@@ -34,30 +30,35 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Check if rate supports calendar configuration
+            rate = self.config_entry.data.get(CONF_RATE, "")
+            rate_option = self.config_entry.data.get(CONF_RATE_OPTION, "")
+            rate_with_option = f"{rate}{rate_option}"
+            supports_calendar = rate_with_option in ["DPC", "DCPC"]
+
+            # Validate calendar for DPC/DCPC rates
+            if supports_calendar:
+                calendar_id = user_input.get(CONF_CALENDAR_ENTITY_ID, "").strip()
+                if not calendar_id:
+                    errors["base"] = "calendar_required"
+                elif not self.hass.states.get(calendar_id):
+                    errors[CONF_CALENDAR_ENTITY_ID] = "calendar_not_found"
+
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
 
         # Check if rate supports calendar configuration
         rate = self.config_entry.data.get(CONF_RATE, "")
         rate_option = self.config_entry.data.get(CONF_RATE_OPTION, "")
         rate_with_option = f"{rate}{rate_option}"
         supports_calendar = rate_with_option in ["DPC", "DCPC"]
+        is_portal_mode = self.config_entry.data.get("auth_mode", "portal") == "portal"
 
         # Build schema based on rate capabilities
         schema_dict: dict[Any, Any] = {
-            vol.Optional(
-                CONF_UPDATE_INTERVAL,
-                default=self.config_entry.options.get(
-                    CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL
-                ),
-            ): NumberSelector(
-                NumberSelectorConfig(
-                    min=30,
-                    max=600,
-                    mode=NumberSelectorMode.BOX,
-                    unit_of_measurement="seconds",
-                )
-            ),
             vol.Optional(
                 CONF_PREHEAT_DURATION,
                 default=self.config_entry.options.get(
@@ -74,28 +75,36 @@ class HydroQcOptionsFlow(config_entries.OptionsFlow):
             ),
         }
 
-        # Add calendar options for DPC/DCPC rates
+        # Add consumption sync option for Portal mode only
+        if is_portal_mode:
+            schema_dict[
+                vol.Optional(
+                    CONF_ENABLE_CONSUMPTION_SYNC,
+                    default=self.config_entry.options.get(
+                        CONF_ENABLE_CONSUMPTION_SYNC,
+                        self.config_entry.data.get(CONF_ENABLE_CONSUMPTION_SYNC, True),
+                    ),
+                )
+            ] = bool
+
+        # Add calendar options for DPC/DCPC rates (required)
         if supports_calendar:
             current_calendar = self.config_entry.options.get(
                 CONF_CALENDAR_ENTITY_ID,
                 self.config_entry.data.get(CONF_CALENDAR_ENTITY_ID, ""),
             )
-            schema_dict[vol.Optional(CONF_CALENDAR_ENTITY_ID, default=current_calendar)] = (
-                EntitySelector(EntitySelectorConfig(domain="calendar"))
-            )
-            schema_dict[
-                vol.Required(
-                    CONF_INCLUDE_NON_CRITICAL_PEAKS,
-                    default=self.config_entry.options.get(
-                        CONF_INCLUDE_NON_CRITICAL_PEAKS,
-                        self.config_entry.data.get(
-                            CONF_INCLUDE_NON_CRITICAL_PEAKS, DEFAULT_INCLUDE_NON_CRITICAL_PEAKS
-                        ),
-                    ),
+            # Calendar is required for DPC/DCPC rates
+            if current_calendar:
+                schema_dict[vol.Required(CONF_CALENDAR_ENTITY_ID, default=current_calendar)] = (
+                    EntitySelector(EntitySelectorConfig(domain="calendar"))
                 )
-            ] = BooleanSelector()
+            else:
+                schema_dict[vol.Required(CONF_CALENDAR_ENTITY_ID)] = EntitySelector(
+                    EntitySelectorConfig(domain="calendar")
+                )
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema_dict),
+            errors=errors,
         )

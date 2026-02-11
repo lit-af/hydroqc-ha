@@ -10,6 +10,533 @@
 
 ---
 
+## [0.7.0] - 2026-02-05
+
+### ⚠️ CHANGEMENT MAJEUR - Calendrier obligatoire
+
+**Le calendrier est maintenant OBLIGATOIRE pour les tarifs DPC (Flex-D) et DCPC (Crédits hivernaux).**
+
+Depuis la version 0.7.0, les capteurs de pointe utilisent le calendrier comme source de vérité. Sans calendrier configuré, les capteurs de pointe ne seront pas créés.
+
+**Réimportez les blueprints! Des améliorations ont été fait depuis la versin 0.6.0**
+
+#### Migration depuis une version antérieure
+
+1. **Créez un calendrier local** dans Home Assistant si vous n'en avez pas :
+   
+   [![Ajouter Calendrier Local](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=local_calendar)
+   
+   Ou manuellement : Paramètres → Intégrations → Ajouter → "Calendrier local"
+   
+2. **Reconfigurez HydroQc** :
+   - Allez dans les options de l'intégration
+   - Sélectionnez votre calendrier
+
+### Ajouté
+
+- **Service `hydroqc.create_peak_event`** : Création manuelle d'événements de pointe critique
+  - Paramètre `date` : Date de l'événement
+  - Paramètre `time_slot` : Matin (AM: 6h-10h) ou Soir (PM: 16h-20h)
+  - Utilise le même format d'UID que les événements OpenData (pas de doublons)
+  - Rafraîchit immédiatement les capteurs après création
+- Validation du calendrier dans le flux de configuration
+- Lien pour créer un Calendrier Local directement depuis le flux de configuration
+- Architecture calendrier comme source de vérité (v0.7.0-beta.1)
+- Trois ordonnanceurs indépendants : OpenData, Portail, Calendrier
+- Protection anti-thundering herd avec décalage aléatoire
+- Bouton de rafraîchissement manuel pour DPC/DCPC
+- Module `utils.py` avec fonctions de saison d'hiver
+
+### Modifié
+
+- Le calendrier est maintenant **obligatoire** pour les tarifs DPC/DCPC
+- Les capteurs de pointe ne sont pas créés si aucun calendrier n'est configuré
+- Renommage du capteur "Économie vs Tarif D" → "Différence Flex D vs Tarif D"
+- Fenêtre active OpenData : 10h30-15h00 EST (au lieu de 11h00-18h00)
+- Intervalle OpenData : 15 minutes (au lieu de 5 minutes)
+- Mises à jour des traductions EN/FR/ES
+
+### Corrigé
+
+- Mode blueprint changé de "single" à "parallel" pour crédits hivernaux (#100)
+- Conflits de déclencheurs pré-chauffage matin/soir (#86)
+- Références `datetime.datetime.now()` dans `calendar_manager.py`
+
+---
+
+## [0.7.0-beta.3] - 2026-02-03
+
+### ⚠️ CHANGEMENT MAJEUR
+
+**Le calendrier est maintenant obligatoire pour les tarifs DPC/DCPC.**
+
+Les utilisateurs avec un tarif DPC ou DCPC qui n'avaient pas configuré de calendrier devront en configurer un. Les capteurs de pointe ne seront pas créés sans calendrier.
+
+Pour migrer :
+1. Créez une intégration Calendrier Local si vous n'en avez pas
+2. Reconfigurez HydroQc pour sélectionner l'entité calendrier
+
+### Ajouté
+
+- **Service `hydroqc.create_peak_event`** : Création manuelle d'événements de pointe critique (#108)
+  - Paramètre `date` : Date de l'événement (sélecteur de date)
+  - Paramètre `time_slot` : Matin (AM: 6h-10h) ou Soir (PM: 16h-20h)
+  - Utilise le même format d'UID que les événements OpenData
+  - Rafraîchit immédiatement les capteurs après création
+  - Vérifie les doublons avant création
+- Validation du calendrier dans le flux de configuration
+- Lien pour créer un Calendrier Local directement depuis le flux de configuration
+
+### Modifié
+
+- Le calendrier est maintenant **obligatoire** (non optionnel) pour les tarifs DPC/DCPC
+- Les capteurs de pointe sont ignorés si aucun calendrier n'est configuré
+- Mises à jour des traductions EN/FR/ES avec les nouvelles instructions
+
+### Corrigé
+
+- Correction des références `datetime.datetime.now()` dans `calendar_manager.py`
+
+---
+
+## [0.7.0-beta.2] - 2026-01-29
+
+### Ajouté
+
+- `utils.py` : Nouveau module utilitaire avec fonctions de saison d'hiver (#102)
+  - `is_winter_season(dt)` : Vérifie si une date est en saison hivernale (1er déc - 31 mars)
+  - `get_winter_season_bounds(date)` : Retourne les bornes de la saison d'hiver
+
+### Modifié
+
+- Refactorisation : Extraction de `is_winter_season` vers `utils.py` (suggestion de revue @lit-af)
+- Refactorisation : Utilisation de `is_winter_season()` dans `calendar_sync.py` et `public_data/peak_handler.py`
+- Renommage du capteur "Économie vs Tarif D" → "Différence Flex D vs Tarif D" (#88)
+  - Clarifie que les valeurs négatives = économies (coût Flex D - coût Tarif D)
+  - Mis à jour dans les trois langues (EN/FR/ES)
+
+### Corrigé
+
+- Correction du formatage dans `button.py` et `sensor.py`
+
+---
+
+## [0.7.0-beta.1] - 2026-01-29
+
+### 🎯 Points saillants de cette version
+
+Cette version introduit une architecture où le calendrier devient la source de vérité pour les capteurs de pointe, avec trois ordonnanceurs indépendants et une protection anti-thundering herd.
+
+#### 📅 Calendrier comme source de vérité
+- **Données persistantes** : Les événements de pointe survivent aux redémarrages de Home Assistant
+- **CalendarPeakHandler** : Nouveau gestionnaire qui lit les événements depuis le calendrier HA
+- **Synchronisation bidirectionnelle** : OpenData → Calendrier → Capteurs
+- **Détection par signature** : Détecte les ajouts, suppressions et modifications d'événements
+
+#### ⏰ Trois ordonnanceurs indépendants
+- **OpenData** : Toutes les 15 minutes avec décalage aléatoire (10h30-15h00 fenêtre active)
+- **Portail** : Aux heures avec décalage aléatoire
+- **Calendrier** : Toutes les 15 minutes pour capter les modifications manuelles
+
+#### 🔄 Anti-thundering herd
+- **Décalage aléatoire** : Minutes (0-14) et secondes (0-59) calculés au démarrage
+- **Distribution des appels** : Évite que tous les utilisateurs appellent l'API en même temps
+- **Appliqué à OpenData ET Portail** : Les deux ordonnanceurs utilisent le même décalage
+
+#### 🔘 Bouton de rafraîchissement manuel
+- **Nouveau bouton** : Permet de forcer un rafraîchissement des données de pointe
+- **Portée limitée** : Rafraîchit uniquement OpenData et calendrier (pas le portail)
+
+### Ajouté
+
+- `CalendarPeakHandler` : Gestionnaire de pointe basé sur le calendrier HA (#102)
+- `CalendarPeakEvent` : Modèle d'événement simplifié parsé depuis le calendrier
+- Bouton de rafraîchissement manuel pour les tarifs DPC/DCPC (#104)
+- Détection par signature pour la synchronisation du calendrier
+- Décalage aléatoire minute/seconde pour l'ordonnanceur OpenData
+- Documentation mise à jour dans `copilot-instructions.md`
+
+### Modifié
+
+- Fenêtre active OpenData changée de 11h00-18h00 à 10h30-15h00 EST
+- Intervalle OpenData changé de 5 minutes à 15 minutes
+- Ordonnanceur Portail avec décalage aléatoire (plus au top de l'heure)
+- Les capteurs de pointe lisent maintenant depuis `CalendarPeakHandler` au lieu de l'API directement
+- Trois ordonnanceurs indépendants au lieu d'un seul
+
+### Corrigé
+
+- Correction du nom de méthode du bouton (`async_fetch_peaks()` → `fetch_peak_data()`)
+- Correction de la restauration des capteurs timestamp (parsing des chaînes ISO)
+- Corrections de linting et erreurs de typage
+
+---
+
+## [0.6.0] - 2025-01-04
+
+**Rafraichissez vos Blueprint**
+
+### 🎯 Points saillants de cette version
+
+Cette version majeure améliore considérablement la performance et la fiabilité de l'intégration avec trois fonctionnalités clés :
+
+#### 📊 Importation optimisée de l'historique de consommation
+- **Traitement par lots** : Importation par blocs de 7 jours avec pauses entre chaque lot
+- **Vérification d'intégrité** : Détection automatique des données corrompues avec tentatives de récupération
+- **Support DST** : Gestion intelligente des transitions heure d'été/hiver
+- **Fiabilité** : Import en arrière-plan sans bloquer Home Assistant
+
+#### ⏰ Ordonnancement intelligent des mises à jour
+- **Fenêtres temporelles adaptées** aux heures réelles de mise à jour d'Hydro-Québec
+- **Réduction drastique** des appels API inutiles (90% de réduction)
+- **Les capteurs se mettent à jour uniquement** lorsque de nouvelles données sont disponibles
+- **Préservation de l'état** : plus de valeurs "Inconnu" entre les mises à jour
+
+#### 🏷️ Organisation améliorée des capteurs
+- **36 capteurs diagnostiques** : désencombre la liste principale des entités
+- **14 capteurs désactivés par défaut** : activation manuelle selon vos besoins
+- **Attribution des sources** : indication claire de la provenance des données (Portail vs OpenData)
+- **Interface épurée** : focus sur les capteurs les plus importants
+
+#### 🔧 Améliorations de l'expérience utilisateur
+- **Détection du portail hors-ligne** : évite les erreurs pendant les maintenances HQ
+- **Détection des changements de période de facturation** : messages contextuels lors des transitions
+- **Messages contextuels** : explications claires lors d'échecs temporaires de synchronisation de conso
+
+### ⚠️ Changements importants
+
+**Suppression de l'option d'intervalle de mise à jour configurable**
+
+L'option "Intervalle de mise à jour" a été retirée de la configuration. Le système utilise maintenant un ordonnancement intelligent basé sur les heures de mise à jour réelles des données Hydro-Québec.
+
+**Migration automatique** : L'intégration supprimera automatiquement l'ancienne configuration lors de la mise à jour. Aucune action requise de votre part.
+
+### Ajouté
+
+- **Importation CSV par lots avec vérification d'intégrité** (#30)
+  - Traitement par lots de 168 heures (7 jours) pour éviter de surcharger les systèmes lents
+  - Délai de 0.5s entre les lots et 1s entre les types de consommation
+  - Vérification automatique de l'intégrité après chaque lot (3 tentatives avec délai)
+  - Détection des journées de transition DST pour éviter les fausses alertes
+  - Vérification des sommes cumulatives non-décroissantes
+
+- **Ordonnancement intelligent des mises à jour** (#35)
+  - Fenêtres temporelles adaptées aux heures de mise à jour HQ
+  - OpenData : 11h-18h EST (5 min actif / 60 min inactif)
+  - Portail : 0h-8h EST (60 min actif / 180 min inactif)
+  - Pointes : toutes les heures à XX:00:00 (saison hivernale uniquement)
+  - Synchronisation consommation : toutes les heures (60+ minutes)
+  - Détection automatique hors-saison (OpenData désactivé hors déc-mars)
+  
+- **Détection du portail hors-ligne**
+  - Vérifie le statut du portail avant toute opération
+  - Évite les erreurs inutiles pendant les maintenances
+  - Journalisation limitée (1x par heure maximum)
+  - Nouveau capteur binaire diagnostique montrant la disponibilité du portail (#23)
+  
+- **Détection des changements de période de facturation**
+  - Identifie automatiquement les périodes à risque (±3 jours autour de la fin de période)
+  - **Problème connu** : Le portail Hydro-Québec peut être indisponible pendant les transitions de période
+  - **Messages explicites** : Au lieu d'afficher une erreur générique, l'intégration explique maintenant que les données peuvent être temporairement indisponibles pendant les transitions de période
+  - **Exemple de message** : "[Portal] Error during consumption sync (near billing period boundary, consumption data may be temporarily unavailable)"
+  - Réduit la confusion des utilisateurs en expliquant que c'est un problème temporaire du portail HQ
+
+- **Attribution des sources de données**
+  - Capteurs du portail : "Espace Client Hydro-Québec"
+  - Capteurs OpenData : "Données ouvertes Hydro-Québec"
+  - Affichage de l'attribution dans les détails des entités
+
+- **Organisation des capteurs**
+  - **36 capteurs diagnostiques** pour désencombrer la liste principale :
+    - 1 capteur de statut du portail
+    - 4 capteurs de période de facturation (durée, jour actuel, moyenne, tarif)
+    - 3 capteurs d'informations techniques
+    - 2 capteurs de début pré-chauffage (WC et DPC)
+    - 15 capteurs binaires de pointes (WC et DPC)
+    - 6 capteurs timestamp (ancrages et pointes régulières DCPC, panne)
+    - 5 autres capteurs techniques (état WC, heures critiques DPC, etc.)
+  - **14 capteurs désactivés par défaut** (peuvent être activés manuellement) :
+    - Tarif et option de tarif
+    - Statut du portail
+    - EPP activé
+    - Jours d'hiver (DPC)
+    - Heures de début pré-chauffage (WC et DPC)
+    - Pré-chauffage en cours (WC et DPC)
+    - Pointes aujourd'hui/demain matin/soir (WC et DPC)
+
+### Modifié
+
+- **Ordonnancement manuel uniquement** : l'intervalle automatique du coordinateur est désactivé
+- **Les capteurs ne se mettent à jour que lors de la récupération réelle de données**
+- **Préservation de l'état des capteurs** :
+  - Données du portail préservées lors des actualisations ignorées
+  - État précédent restauré après redémarrage de Home Assistant
+  - Plus de valeurs "Inconnu" entre les actualisations
+- **Optimisation de la synchronisation calendrier** : mise à jour uniquement si nouveaux événements
+- Synchronisation consommation : toutes les heures (au lieu de 15 min)
+- Réduction significative de la charge système et des mises à jour inutiles
+
+### Corrigé
+
+- **Synchronisation du calendrier pour les pointes critiques annoncées**
+  - Le suivi compte maintenant uniquement les pointes critiques (pas le total)
+  - Les annonces de pointes critiques pour des plages déjà planifiées (DCPC) déclenchent maintenant la synchronisation du calendrier
+  - Corrige le problème où les événements critiques n'apparaissaient pas dans le calendrier jusqu'au redémarrage
+
+- **Configuration du calendrier optionnel** (#80)
+  - Le champ calendrier peut maintenant être vidé dans les options sans erreur de validation
+  - Les utilisateurs peuvent désactiver complètement la fonctionnalité calendrier
+  - Les événements existants restent dans le calendrier (gestion manuelle possible)
+
+- **Détection améliorée des transitions DST lors de l'importation CSV**
+  - Vérification basée sur la date spécifique au lieu de la différence de comptage
+  - Utilise les capacités de fuseau horaire de Python pour identifier les vraies journées de transition DST
+  - Évite les faux positifs tout en capturant les vrais problèmes d'intégrité des données
+
+- Gestion des erreurs "No data available" lors de la synchronisation de consommation (données du jour actuel pas encore disponibles)
+- Suppression du délai de démarrage bloquant (améliore le temps de démarrage de HA)
+- Correction de l'accès à l'attribut `_events` dans PeakHandler
+
+### Retiré
+
+- Option de configuration "Intervalle de mise à jour" (BREAKING CHANGE)
+  - Migration automatique incluse
+  - L'ordonnancement intelligent remplace ce réglage
+
+---
+
+## [0.5.0] - 2025-12-22
+
+
+### Note de mise à jour importante
+
+**⚠️ Actions requises lors de la mise à jour** :
+
+1. **Blueprint Crédits Hivernaux** : Le blueprint a été complètement refondu pour prendre en charge les ancrage et les pointes non-critiques. Seulenent les pointes critiques sont géré via le calendrier désormais.
+   - **Action requise** : Réimportez le blueprint depuis HACS ou GitHub
+
+2. **Nettoyage du calendrier DCPC** : Les événements non-critiques ne sont plus créés
+   - **Recommandation** : Supprimez manuellement les futures événements non-critiques de votre calendrier
+   - Les événements non-critiques ont le titre "Pointe régulière" (avant cette version)
+   - Seules les pointes critiques annoncées par Hydro-Québec apparaissent maintenant (titre: "Pointe")
+
+3. **Système de traduction** : Les noms d'entités suivent maintenant la langue du système Home Assistant
+   - Vérifiez **Paramètres → Système → Général → Langue** pour votre langue d'affichage
+   - Support complet : Français, Anglais, Espagnol
+
+### Ajouté
+
+- **Système de traduction multilingue** (PR #75, #78, merci @jf-navica)
+  - Migration complète vers le système `translation_key` de Home Assistant
+  - **Nouveau** : Support complet de l'espagnol (`es.json`) - 319 lignes de traductions
+  - Noms de capteurs plus courts et concis pour améliorer l'affichage mobile
+  - Exemples : "Billing Period Day" au lieu de "Current Billing Period Current Day"
+  - Les entités affichent automatiquement les noms dans la langue du système Home Assistant
+  - Langues supportées : Français, Anglais, Espagnol (couverture complète des 58 capteurs et 16 capteurs binaires)
+
+- **Option de désactivation de la synchronisation de consommation** (PR #74, #78)
+  - Nouvelle option dans le flux de configuration Portal mode : "Activer la synchronisation de l'historique de consommation"
+  - Activée par défaut pour compatibilité ascendante
+  - Permet de désactiver le suivi de consommation pour réduire les appels API
+  - Utile pour les utilisateurs qui n'utilisent pas le tableau de bord Énergie
+  - Configurable après l'installation via Options
+
+### Modifié
+
+- **Simplification du flux de configuration initial** (PR #78)
+  - Retrait de la configuration du pré-chauffage du flux de configuration initial.
+  - Durée de pré-chauffage utilise la valeur par défaut (120 minutes) lors de la configuration
+  - Configuration du pré-chauffage reste disponible dans les Options après l'installation
+  - Réduit le nombre d'étapes de configuration pour simplifier l'expérience initiale
+
+- **Refonte complète du blueprint Crédits Hivernaux** (`winter-credits-calendar.yaml`, PR #72, #73)
+  - Déclencheurs à heures fixes (01h, 04h, 06h, 10h, 12h, 14h, 16h, 20h) pour l'horaire quotidien
+  - Déclencheurs calendrier avec offset uniquement pour le pré-chauffage des pointes critiques
+  - Variable `next_peak_critical` pour déterminer si la prochaine pointe est critique
+  - Validation du tarif DCPC pour éviter les conflits avec calendriers multi-tarifs
+  - Mode `single` avec `max_exceeded: silent` pour éviter les exécutions multiples
+  - Utilisation de `calendar.get_events` pour obtenir les événements du jour à l'exécution
+  - Patron de templating inspiré du blueprint Flex-D pour une meilleure cohérence
+
+- **Amélioration des noms de capteurs** (PR #75, merci @jf-navica)
+  - 58 noms de capteurs raccourcis pour meilleure lisibilité
+  - Exemples français : "Conso. totale" au lieu de "Consommation totale horaire"
+  - Améliore l'affichage sur mobile et dans les tableaux de bord
+
+- **Simplification du calendrier DCPC** (PR #72)
+  - Le calendrier ne crée plus d'événements pour les pointes non-critiques
+  - Seules les pointes critiques annoncées par Hydro-Québec apparaissent dans le calendrier
+
+### Corrigé
+
+- **Bug critique du blueprint winter-credits-calendar** (PR #73)
+  - `state_attr(calendar_entity, 'events')` retournait vide, empêchant la distinction entre pointes critiques et régulières
+  - Solution : Utilisation de `calendar.get_events` pour obtenir les événements réels à l'exécution
+  - Les déclencheurs à heures fixes fonctionnent maintenant correctement
+  - La variable `next_peak_critical` reflète maintenant l'état réel du calendrier
+
+- **Erreur de sélection du calendrier dans le flux de configuration** (PR #75, merci @jf-navica)
+  - Simplification du schéma de configuration en utilisant le type natif `bool` au lieu de `BooleanSelector()`
+  - Correction des erreurs de sérialisation du schéma Home Assistant
+  - Configuration plus fiable et maintenable
+
+- **Corrections de sérialisation du schéma de configuration** (PR #78)
+  - Changement de `str` vers `TextSelector()` pour le champ `contract_name`
+  - Changement de `vol.Boolean()` vers `bool` pour le champ `enable_consumption_sync`
+  - Imports corrects des sélecteurs Home Assistant
+
+- **État `current_state` pour DPC** (PR #70, merci @lit-af)
+  - Retourne maintenant "normal" au lieu de "off_season" lorsqu'il n'y a pas d'événements pendant la saison hivernale
+  - Améliore la clarté de l'état des capteurs DPC
+
+- **Gestion des fuseaux horaires** (PR #66, merci @jf-navica)
+  - Migration de `pytz` vers `zoneinfo` (bibliothèque standard Python)
+  - Meilleure compatibilité et performances
+
+- **Calcul de la somme cumulative de consommation** (PR #66, merci @jf-navica)
+  - Correction pour éviter les réinitialisations lors de lacunes dans les données
+  - `get_base_sum()` regarde maintenant jusqu'à 30 jours en arrière pour trouver la dernière somme connue
+  - Base la continuité sur le premier point de données réel au lieu de la date de début demandée
+  - Blocage des valeurs de consommation négatives lors de l'importation CSV
+
+### Retiré
+
+- **Option "Inclure les pointes non-critiques"** pour DCPC (PR #72)
+  - Suppression de `CONF_INCLUDE_NON_CRITICAL_PEAKS` de la configuration
+  - Retiré du flux de configuration et des options
+  - Simplification de la gestion des événements calendrier
+
+- **Logique de gestion des événements non-critiques** dans `calendar_manager.py` (PR #72)
+  - Fonction `async_update_peak_event()` supprimée
+  - Constante `TITLE_REGULAR` supprimée
+  - Paramètre `include_non_critical` retiré de `_create_or_update_peak_events()`
+
+- **Champs `name` codés en dur** dans `const.py` (PR #75, merci @jf-navica)
+  - 58 suppressions de champs "name" dans les dictionnaires SENSORS et BINARY_SENSORS
+  - Remplacés par le système translation_key pour une meilleure maintenabilité
+
+### Guide de mise à jour depuis 0.3.1 ou version antérieure
+
+#### 1. Mise à jour de l'intégration
+
+**Via HACS (recommandé)** :
+1. Ouvrez HACS → Intégrations
+2. Trouvez "Hydro-Québec"
+3. Cliquez sur "Mettre à jour"
+4. Redémarrez Home Assistant
+
+**Manuellement** :
+1. Téléchargez `hydroqc.zip` depuis la [page des releases](https://github.com/hydroqc/hydroqc-ha/releases/tag/v0.5.0)
+2. Extrayez dans `custom_components/hydroqc/`
+3. Redémarrez Home Assistant
+
+#### 2. Mise à jour du blueprint Crédits Hivernaux (OBLIGATOIRE si vous l'utilisez)
+
+Le blueprint a été complètement refondu pour corriger un bug critique. **Vous devez le réimporter.**
+
+**Via HACS** :
+1. Allez dans **Paramètres → Automatisations & Scènes → Blueprints**
+2. Cliquez sur **⋮** à côté de "HydroQC - Crédits Hivernaux"
+3. Sélectionnez **Réimporter le blueprint**
+
+**Manuellement** :
+1. Téléchargez [`winter-credits-calendar.yaml`](https://github.com/hydroqc/hydroqc-ha/blob/main/blueprints/winter-credits-calendar.yaml)
+2. Copiez le fichier dans `config/blueprints/automation/hydroqc/`
+3. Rechargez les blueprints : **Paramètres → Automatisations & Scènes → Blueprints → ⋮ → Recharger les blueprints**
+
+**Vérification** :
+- Vos automatisations existantes continueront de fonctionner automatiquement
+- Le blueprint détectera maintenant correctement les pointes critiques vs régulières
+- Testez votre automatisation avant la prochaine pointe critique
+
+#### 3. Nettoyage du calendrier DCPC (recommandé)
+
+Les versions précédentes créaient des événements "Pointe régulière" dans le calendrier. Ces événements ne sont plus créés dans cette version.
+
+**Pour supprimer les futures événements non-critiques** :
+
+1. Ouvrez l'entité calendrier HydroQC dans Home Assistant
+2. Trouvez les événements avec le titre **"Pointe régulière"**
+3. Supprimez-les manuellement un par un (ils apparaissent quotidiennement à 6h-10h et 16h-20h)
+
+#### 4. Vérification de la langue d'affichage
+
+Les noms d'entités suivent maintenant la **langue du système** Home Assistant, pas la langue du profil utilisateur.
+
+**Pour vérifier ou changer la langue** :
+1. Allez dans **Paramètres → Système → Général**
+2. Vérifiez le champ **Langue** sous "Langue & Région"
+3. Sélectionnez votre langue préférée (Français, English, Español)
+4. Cliquez sur **Enregistrer** et rafraîchissez votre navigateur
+
+**Langues supportées** :
+- 🇫🇷 Français : Noms complets et concis (ex: "Solde", "Conso. totale")
+- 🇬🇧 English : Clean names (e.g., "Balance", "Billing Period Day")
+- 🇪🇸 Español : Traducciones completas (ej: "Saldo", "Día período facturación")
+
+#### 5. Option de synchronisation de consommation (nouvelle fonctionnalité)
+
+Si vous ne souhaitez pas synchroniser l'historique de consommation (par exemple, si vous n'utilisez pas le tableau de bord Énergie) :
+
+1. Allez dans **Paramètres → Appareils & Services → Hydro-Québec**
+2. Cliquez sur **Configurer** (icône engrenage) sur votre intégration
+3. Décochez **"Activer la synchronisation de l'historique de consommation"**
+4. Cliquez sur **Soumettre**
+
+**Effet** :
+- ✅ Réduit les appels API vers Hydro-Québec
+- ✅ Améliore les performances si vous n'avez pas besoin des données de consommation
+- ✅ Les autres capteurs (balance, facture, pointes) continuent de fonctionner normalement
+- ⚠️ Les statistiques de consommation horaire ne seront plus mises à jour
+
+### Remerciements
+
+Un grand merci à tous les contributeurs de cette version :
+
+- **@jf-navica** : Système de traduction complet, support espagnol, corrections de bugs (PR #75, #66)
+- **@lit-af** : Correction de l'état DPC `current_state` (PR #70)
+- Et tous les utilisateurs qui ont testé les versions beta et fourni des retours précieux !
+
+**Merci de signaler tout problème via les [issues GitHub](https://github.com/hydroqc/hydroqc-ha/issues).**
+
+---
+
+## [0.4.0-beta.1] - 2025-12-18
+
+### Note
+
+**⚠️ Changement important** : Les événements de pointe non-critiques ne sont plus créés dans le calendrier pour les tarifs DCPC (Crédits Hivernaux). Seules les pointes critiques annoncées par Hydro-Québec apparaissent maintenant dans le calendrier.
+
+**Migration requise** : Si vous utilisez le blueprint Crédits Hivernaux :
+1. Réimportez le nouveau blueprint depuis HACS ou GitHub
+2. Le blueprint utilise maintenant des déclencheurs à heures fixes combinés avec des vérifications du calendrier
+3. Les anciennes automatisations continueront de fonctionner mais ne recevront plus d'événements non-critiques
+
+### Modifié
+- **Architecture des blueprints** : Refonte complète du blueprint Crédits Hivernaux (winter-credits-calendar.yaml)
+  - Déclencheurs à heures fixes (01h, 04h, 06h, 10h, 12h, 14h, 16h, 20h) pour l'horaire quotidien
+  - Déclencheurs calendrier avec offset pour le pré-chauffage des pointes critiques uniquement
+  - Variable `next_peak_critical` pour déterminer si la prochaine pointe est critique
+  - Validation du tarif DCPC pour éviter les conflits avec calendriers multi-tarifs
+  - Mode `single` avec `max_exceeded: silent` pour éviter les exécutions multiples
+  - Inspiration du patron de templating du blueprint Flex-D pour une meilleure cohérence
+- **Simplification du calendrier DCPC** : Le calendrier ne crée plus d'événements pour les pointes non-critiques
+  - Réduit la charge sur le calendrier Home Assistant
+  - Élimine la mise à jour quotidienne des événements non-critiques
+  - Améliore les performances et la fiabilité
+- Mise à jour de la documentation des blueprints pour refléter les nouveaux comportements
+
+### Retiré
+- **Option de configuration** : Retrait de l'option "Inclure les pointes non-critiques" pour DCPC
+  - Supprimé de `CONF_INCLUDE_NON_CRITICAL_PEAKS` de la configuration
+  - Retiré du flux de configuration et des options
+- **Gestion des événements non-critiques** : Retrait de la logique de création/mise à jour des événements non-critiques dans `calendar_manager.py`
+  - Fonction `async_update_peak_event()` supprimée
+  - Constante `TITLE_REGULAR` supprimée
+  - Paramètre `include_non_critical` retiré de `_create_or_update_peak_events()`
+
+---
+
 ## [0.3.1] - 2025-12-11
 
 ### Modifié

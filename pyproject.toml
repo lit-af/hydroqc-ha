@@ -37,6 +37,7 @@ packages = ["custom_components"]
 [dependency-groups]
 dev = [
     "Hydro-Quebec-API-Wrapper==4.2.6",
+    "homeassistant-stubs>=2025.1.0",  # Type stubs for HA API compatibility checking
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "pytest>=8.3.0",
@@ -68,7 +69,10 @@ select = [
 ]
 ignore = [
     "E501",     # line too long (handled by formatter)
+    "PLR0911",  # too many return statements (complex conditionals)
+    "PLR0912",  # too many branches (complex service handlers)
     "PLR0913",  # too many arguments
+    "PLR0915",  # too many statements (complex service handlers)
     "PLR2004",  # magic value comparison
     "RET504",   # unnecessary assignment before return
     "SIM102",   # collapsible if
@@ -99,12 +103,11 @@ show_error_codes = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "homeassistant.*"
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 module = "hydroqc.*"
 ignore_missing_imports = true
+
+# Note: homeassistant.* types are now checked via homeassistant-stubs
+# This catches API compatibility issues at type-check time
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

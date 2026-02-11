@@ -14,10 +14,11 @@ from homeassistant.helpers.storage import Store
 from hydroqc.contract import ContractDCPC
 
 from .. import calendar_manager
+from ..calendar_peak_handler import CalendarPeakHandler
 from ..const import (
     CONF_CALENDAR_ENTITY_ID,
-    CONF_INCLUDE_NON_CRITICAL_PEAKS,
 )
+from ..utils import is_winter_season
 
 if TYPE_CHECKING:
     pass
@@ -38,13 +39,6 @@ class CalendarSyncMixin:
         self._calendar_entity_id = self.entry.options.get(
             CONF_CALENDAR_ENTITY_ID, self.entry.data.get(CONF_CALENDAR_ENTITY_ID)
         )
-        self._include_non_critical_peaks = self.entry.options.get(
-            CONF_INCLUDE_NON_CRITICAL_PEAKS,
-            self.entry.data.get(
-                CONF_INCLUDE_NON_CRITICAL_PEAKS,
-                getattr(self, "_default_include_non_critical_peaks", True),
-            ),
-        )
 
         # Calendar validation state (retry logic to avoid false positives)
         self._calendar_validation_attempts = 0
@@ -63,6 +57,22 @@ class CalendarSyncMixin:
 
         # Track calendar sync task (prevent concurrent syncs)
         self._calendar_sync_task: asyncio.Task[None] | None = None
+
+        # Calendar peak handler for reading events from calendar (sensors source)
+        # Only created if calendar is configured for DPC/DCPC rates
+        self.calendar_peak_handler: CalendarPeakHandler | None = None
+        if self._calendar_entity_id and self.rate_with_option in ["DPC", "DCPC"]:
+            self.calendar_peak_handler = CalendarPeakHandler(
+                hass=self.hass,
+                calendar_entity_id=self._calendar_entity_id,
+                rate_code=self.rate_with_option,
+                preheat_duration=self._preheat_duration,
+            )
+            _LOGGER.info(
+                "Calendar peak handler initialized for %s with calendar %s",
+                self.contract_name,
+                self._calendar_entity_id,
+            )
 
     async def async_load_calendar_uids(self) -> None:
         """Load persisted calendar event UIDs from storage."""
@@ -102,16 +112,54 @@ class CalendarSyncMixin:
         except Exception as err:
             _LOGGER.error("Failed to save calendar UIDs to storage: %s", err)
 
+    async def async_load_calendar_peak_events(self) -> bool:
+        """Load peak events from calendar into CalendarPeakHandler.
+
+        This refreshes the calendar-based peak data that sensors read from.
+        Should be called on every coordinator refresh.
+
+        Returns:
+            True if events were loaded successfully, False otherwise.
+        """
+        if not self.calendar_peak_handler:
+            return False
+
+        success = await self.calendar_peak_handler.async_load_events()
+
+        if success:
+            _LOGGER.debug(
+                "[Calendar] Loaded %d events from calendar for %s (calendar: %s)",
+                len(self.calendar_peak_handler._events),
+                self.contract_name,
+                self.calendar_peak_handler.calendar_name,
+            )
+        else:
+            _LOGGER.debug(
+                "[Calendar] Failed to load events from calendar %s for %s",
+                self._calendar_entity_id,
+                self.contract_name,
+            )
+
+        return success
+
     def is_sensor_seasonal(self, data_source: str) -> bool:
         """Check if a winter credit sensor is in season.
 
         Winter credit sensors should only show data during the winter season.
         This applies ONLY to Portal mode sensors that fetch from contract data.
         OpenData mode sensors (public_client) are always available.
+        Calendar-based sensors follow winter season rules for DCPC rate.
         """
         # OpenData mode sensors using public_client are never seasonal
         if data_source.startswith("public_client."):
             return True
+
+        # Calendar-based sensors for DCPC follow winter season
+        if data_source.startswith("calendar_peak_handler."):
+            if self.rate_option != "CPC":
+                return True  # DPC is not seasonal
+            # For DCPC, check if we're in winter season
+            return is_winter_season()
 
         if "peak_handler" not in data_source or self.rate_option != "CPC":
             return True  # Not a seasonal sensor
@@ -169,7 +217,6 @@ class CalendarSyncMixin:
         # Update entry to remove calendar configuration
         new_data = dict(self.entry.data)
         new_data.pop(CONF_CALENDAR_ENTITY_ID, None)
-        new_data.pop(CONF_INCLUDE_NON_CRITICAL_PEAKS, None)
 
         self.hass.config_entries.async_update_entry(self.entry, data=new_data)
 
@@ -256,7 +303,7 @@ class CalendarSyncMixin:
                 self.contract_name,
             )
 
-            # Sync events using calendar manager
+            # Sync events using calendar manager (critical peaks only)
             new_uids = await calendar_manager.async_sync_events(
                 self.hass,
                 self._calendar_entity_id,
@@ -265,7 +312,6 @@ class CalendarSyncMixin:
                 self.contract_id,
                 self.contract_name,
                 self.rate_with_option,
-                self._include_non_critical_peaks or False,
             )
 
             # Update stored UIDs and persist to storage
